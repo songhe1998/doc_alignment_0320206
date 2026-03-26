@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Document Alignment Lab</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="hero">
+        <p class="eyebrow">Document Alignment Lab</p>
+        <h1>Test Structural Migration in a browser.</h1>
+        <p class="hero-copy">
+          Upload a source document and a target template, or use files from <code>data/</code> and
+          <code>examples/</code>. The app preserves source substance, transplants template structure,
+          and returns the result in the inferred format unless you override it.
+        </p>
+      </section>
+
+      <section class="workspace">
+        <form id="align-form" class="panel form-panel">
+          <div class="panel-header">
+            <h2>New Run</h2>
+            <p>Uploads override sample selections. Leave format on auto to follow the template.</p>
+          </div>
+
+          <div class="field-grid">
+            <fieldset class="file-card">
+              <legend>Source Document</legend>
+              <label class="field">
+                <span>Sample file</span>
+                <select id="source-sample" name="sourceSample">
+                  <option value="">Choose a sample</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Upload file</span>
+                <input id="source-file" name="sourceFile" type="file" accept=".pdf,.docx,.md,.markdown,.txt,.text" />
+              </label>
+            </fieldset>
+
+            <fieldset class="file-card">
+              <legend>Target Template</legend>
+              <label class="field">
+                <span>Sample file</span>
+                <select id="template-sample" name="templateSample">
+                  <option value="">Choose a sample</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Upload file</span>
+                <input id="template-file" name="templateFile" type="file" accept=".pdf,.docx,.md,.markdown,.txt,.text" />
+              </label>
+            </fieldset>
+          </div>
+
+          <div class="field-grid compact">
+            <label class="field">
+              <span>Output format</span>
+              <select name="format" id="format">
+                <option value="auto">Auto</option>
+                <option value="markdown">Markdown</option>
+                <option value="docx">DOCX</option>
+                <option value="pdf">PDF</option>
+                <option value="latex">LaTeX</option>
+              </select>
+            </label>
+
+            <label class="field">
+              <span>Output name</span>
+              <input name="outputName" type="text" placeholder="aligned" />
+            </label>
+
+            <label class="field">
+              <span>Reasoning</span>
+              <select name="reasoning">
+                <option value="medium">medium</option>
+                <option value="low">low</option>
+                <option value="high">high</option>
+                <option value="xhigh">xhigh</option>
+                <option value="none">none</option>
+              </select>
+            </label>
+
+            <label class="field">
+              <span>Max output tokens</span>
+              <input name="maxOutputTokens" type="number" min="256" step="256" value="12000" />
+            </label>
+          </div>
+
+          <details class="advanced">
+            <summary>Advanced</summary>
+            <div class="field-grid compact">
+              <label class="field">
+                <span>Model override</span>
+                <input name="model" type="text" placeholder="Leave blank for default" />
+              </label>
+              <label class="field">
+                <span>PDF engine override</span>
+                <input name="pdfEngine" type="text" placeholder="auto / xelatex / pdflatex" />
+              </label>
+            </div>
+          </details>
+
+          <div class="actions">
+            <button id="submit-button" type="submit">Run Alignment</button>
+            <p id="form-hint" class="form-hint">Auto mode resolves format from the template first.</p>
+          </div>
+        </form>
+
+        <section class="panel result-panel">
+          <div class="panel-header">
+            <h2>Run Output</h2>
+            <p>Resolved format, token usage, server logs, and download link appear here.</p>
+          </div>
+
+          <div id="status-card" class="status-card idle">
+            <span class="status-dot"></span>
+            <span id="status-text">Idle</span>
+          </div>
+
+          <div id="result-summary" class="summary hidden">
+            <div class="summary-grid">
+              <div>
+                <p class="summary-label">Output format</p>
+                <p id="summary-format" class="summary-value">-</p>
+              </div>
+              <div>
+                <p class="summary-label">Model used</p>
+                <p id="summary-model" class="summary-value">-</p>
+              </div>
+              <div>
+                <p class="summary-label">Output file</p>
+                <p id="summary-file" class="summary-value">-</p>
+              </div>
+              <div>
+                <p class="summary-label">Tokens</p>
+                <p id="summary-usage" class="summary-value">-</p>
+              </div>
+            </div>
+            <a id="download-link" class="download-link" href="#" target="_blank" rel="noreferrer">Download result</a>
+          </div>
+
+          <div id="error-box" class="error-box hidden"></div>
+
+          <div class="logs">
+            <div class="logs-header">
+              <h3>Run Log</h3>
+            </div>
+            <pre id="log-output">No run yet.</pre>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <script src="/app.js" defer></script>
+  </body>
+</html>

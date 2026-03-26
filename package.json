@@ -1,0 +1,24 @@
+{
+  "name": "doc_align_032026",
+  "version": "1.0.0",
+  "description": "Document alignment CLI built on the OpenAI Responses API.",
+  "main": "src/align.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "align": "node src/align.js",
+    "align:example": "node src/align.js --source examples/source-nda.md --template examples/template-msa.md --output output/aligned-nda.md --format markdown",
+    "ui": "node src/server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "dotenv": "^17.3.1",
+    "express": "^5.2.1",
+    "mammoth": "^1.12.0",
+    "multer": "^2.1.1",
+    "openai": "^6.33.0",
+    "pdf-parse": "^2.4.5"
+  }
+}

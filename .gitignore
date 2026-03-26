@@ -1,0 +1,7 @@
+node_modules
+.DS_Store
+.env
+.tmp_ui_uploads
+output
+tmp_preview
+*.log

@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: document-alignment-lab
+    runtime: docker
+    plan: starter
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_MODEL
+        value: gpt-5.4
+      - key: OPENAI_REASONING_EFFORT
+        value: medium
+      - key: OPENAI_MAX_OUTPUT_TOKENS
+        value: "12000"
+      - key: PANDOC_PDF_ENGINE
+        value: xelatex
+      - key: OUTPUT_RETENTION_HOURS
+        value: "24"
+      - key: UPLOAD_MAX_MB
+        value: "50"
