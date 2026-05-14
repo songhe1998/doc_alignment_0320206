@@ -8,7 +8,12 @@ const path = require('path');
 const dotenv = require('dotenv');
 const OpenAI = require('openai');
 
-const { buildAlignmentInstructions, buildTaskBrief } = require('./alignmentPrompt');
+const {
+  buildAlignmentInstructions,
+  buildTaskBrief,
+  buildVerifiedAlignmentInstructions,
+  buildVerifiedAlignmentBrief,
+} = require('./alignmentPrompt');
 const { loadDocumentText } = require('./documentLoader');
 
 dotenv.config({ quiet: true });
@@ -400,10 +405,98 @@ async function resolveModel(client, requestedModel, isExplicitModel) {
   return { model: requestedModel, fallbackMessage: null };
 }
 
+async function runVerifiedAgentLayer({
+  client,
+  model,
+  reasoning,
+  maxOutputTokens,
+  sourcePath,
+  templatePath,
+  outputFormat,
+  modelOutputFormat,
+  languageProfile,
+  sourceText,
+  templateText,
+  candidateDraft,
+}) {
+  const response = await client.responses.create({
+    model,
+    reasoning: { effort: reasoning === 'none' ? 'low' : reasoning },
+    max_output_tokens: maxOutputTokens,
+    input: [
+      {
+        role: 'developer',
+        content: buildVerifiedAlignmentInstructions(modelOutputFormat, languageProfile),
+      },
+      {
+        role: 'user',
+        content: buildVerifiedAlignmentBrief({
+          sourcePath: path.basename(sourcePath),
+          templatePath: path.basename(templatePath),
+          outputFormat,
+          modelOutputFormat,
+          languageProfile,
+        }),
+      },
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'input_text',
+            text: [
+              `Source Document (${path.basename(sourcePath)}): this is the only authoritative legal substance.`,
+              'BEGIN SOURCE DOCUMENT',
+              sourceText,
+              'END SOURCE DOCUMENT',
+            ].join('\n\n'),
+          },
+        ],
+      },
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'input_text',
+            text: [
+              `Target Template (${path.basename(templatePath)}): structure and presentation only; do not preserve its unsupported content.`,
+              'BEGIN TARGET TEMPLATE',
+              templateText,
+              'END TARGET TEMPLATE',
+            ].join('\n\n'),
+          },
+        ],
+      },
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'input_text',
+            text: [
+              'Candidate Draft: verify this generated draft for target-format fidelity and source-only substance, then return the complete revised final document.',
+              'BEGIN CANDIDATE DRAFT',
+              candidateDraft,
+              'END CANDIDATE DRAFT',
+            ].join('\n\n'),
+          },
+        ],
+      },
+    ],
+  });
+
+  const verifiedDocument = response.output_text ? response.output_text.trim() : '';
+  if (!verifiedDocument) {
+    throw new Error(`Verified agent layer returned no text output. Response ID: ${response.id}`);
+  }
+
+  return {
+    verifiedDocument,
+    usage: response.usage || {},
+    responseId: response.id,
+  };
+}
+
 async function runAlignment(options) {
   const logger = createLogger(options.logger);
-
-  requireEnv('OPENAI_API_KEY');
 
   if (!options.source || !options.template) {
     throw new Error('Missing source or template path.');
@@ -439,9 +532,11 @@ async function runAlignment(options) {
   logger.info(`Resolved output format: ${outputFormat}`);
   logger.info(`Resolved output path: ${outputPath}`);
 
-  const client = new OpenAI({
-    apiKey: process.env.OPENAI_API_KEY,
-  });
+  const client =
+    options.client ||
+    new OpenAI({
+      apiKey: requireEnv('OPENAI_API_KEY'),
+    });
 
   const { model, fallbackMessage } = await resolveModel(client, requestedModel, isExplicitModel);
   if (fallbackMessage) {
@@ -518,13 +613,30 @@ async function runAlignment(options) {
     throw new Error(`Model returned no text output. Response ID: ${response.id}`);
   }
 
+  logger.info('Running verified post-generation agent for template format and source-only substance');
+  const verificationResult = await runVerifiedAgentLayer({
+    client,
+    model,
+    reasoning,
+    maxOutputTokens,
+    sourcePath,
+    templatePath,
+    outputFormat,
+    modelOutputFormat,
+    languageProfile,
+    sourceText,
+    templateText,
+    candidateDraft: alignedDocument,
+  });
+  const finalDocument = verificationResult.verifiedDocument;
+
   if (outputFormat === 'docx') {
     logger.info('Converting generated Markdown to DOCX');
-    convertMarkdownToDocx(alignedDocument, outputPath, templatePath);
+    convertMarkdownToDocx(finalDocument, outputPath, templatePath);
   } else if (outputFormat === 'pdf') {
     const pdfOptions = resolvePdfConversionOptions({
       explicitPdfEngine: options.pdfEngine,
-      markdown: alignedDocument,
+      markdown: finalDocument,
       sourceText,
       templateText,
     });
@@ -538,12 +650,20 @@ async function runAlignment(options) {
         ? ` using ${pdfOptions.fontProfile.serif}`
         : '';
     logger.info(`Converting generated Markdown to PDF with ${pdfOptions.engine}${fontSuffix}`);
-    convertMarkdownToPdf(alignedDocument, outputPath, pdfOptions);
+    convertMarkdownToPdf(finalDocument, outputPath, pdfOptions);
   } else {
-    fs.writeFileSync(outputPath, `${alignedDocument}\n`, 'utf8');
+    fs.writeFileSync(outputPath, `${finalDocument}\n`, 'utf8');
   }
 
-  const usage = response.usage || {};
+  const firstPassUsage = response.usage || {};
+  const verificationUsage = verificationResult.usage || {};
+  const usage = {
+    input_tokens: (firstPassUsage.input_tokens || 0) + (verificationUsage.input_tokens || 0),
+    output_tokens: (firstPassUsage.output_tokens || 0) + (verificationUsage.output_tokens || 0),
+    total_tokens: (firstPassUsage.total_tokens || 0) + (verificationUsage.total_tokens || 0),
+    generation: firstPassUsage,
+    verified_agent: verificationUsage,
+  };
   logger.info(`Saved aligned draft to ${outputPath}`);
   if (usage.input_tokens || usage.output_tokens || usage.total_tokens) {
     logger.info(
@@ -559,10 +679,12 @@ async function runAlignment(options) {
     model,
     usage,
     responseId: response.id,
+    verificationResponseId: verificationResult.responseId,
   };
 }
 
 module.exports = {
   runAlignment,
+  runVerifiedAgentLayer,
   VALID_FORMATS,
 };

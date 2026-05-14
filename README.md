@@ -13,6 +13,7 @@ This project aligns a source legal document into the structural container of a t
 - Includes a local browser UI for uploading files or selecting fixtures and running alignments without using the CLI
 - Defaults to automatic output format inference based on the target template, then the source, and finally the output path if you provide one
 - Encodes your "Structural Migration" prompt directly into the developer instructions
+- Runs a verified post-generation agent layer that keeps the target template's format while removing or rewriting template-only substantive content
 
 ## Setup
 
@@ -90,6 +91,12 @@ Example run:
 npm run align:example
 ```
 
+Run local tests without calling the OpenAI API:
+
+```sh
+npm test
+```
+
 ## UI Usage
 
 Start the local server:
@@ -152,6 +159,7 @@ Notes for hosted use:
 ## Notes
 
 - The script writes only the model's final document output to the target file.
+- Every run uses two model passes: initial alignment, then a verified agent pass for target-format fidelity and source-only substance.
 - The UI writes browser-triggered runs to `./output/ui/<request-id>/`.
 - Supported inputs: `.pdf`, `.docx`, `.md`, `.markdown`, `.txt`, `.text`
 - For auto-format output, `.pdf` maps to PDF, `.docx` maps to DOCX, and text-like inputs map to Markdown.

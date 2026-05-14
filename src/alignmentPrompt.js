@@ -49,6 +49,10 @@ function buildAlignmentInstructions(outputFormat, languageProfile) {
     '- Group source definitions, covenants, limitations, remedies, and boilerplate into the corresponding template sections.',
     '- Preserve all source legal values and facts, including durations, parties, jurisdictions, liabilities, remedies, carve-outs, and procedural requirements.',
     '- Never replace source facts with the template sample facts.',
+    '- Treat the template as a formatting specimen, not as a source of legal substance.',
+    '- Do not copy, paraphrase, or preserve any substantive sentence from the template unless the source independently supports that same substance.',
+    '- You may retain neutral template titles, section headings, numbering labels, signature captions, and other neutral structural labels as formatting devices even when the source uses different labels.',
+    '- If a title, heading, caption, recital label, or template slot embeds template-specific facts or legal characterization not supported by the source, keep the formatting pattern but replace the wording with source-grounded neutral wording.',
     '',
     '3. Refinement and Polish',
     '- Mirror the template use of capitalization, bolding, defined terms, and stylistic emphasis.',
@@ -56,12 +60,62 @@ function buildAlignmentInstructions(outputFormat, languageProfile) {
     '',
     'Hard Constraints',
     '- Do not invent new legal obligations, dates, parties, payment terms, governing law, liability caps, or termination triggers that are not grounded in the source.',
+    '- Do not carry over template-only sample clauses, explanatory prose, recitals, appendix references, signature prose, filler sentences, or boilerplate that lacks source support.',
     '- If the template has a structural slot that has no source equivalent, adapt gracefully without adding substantive obligations.',
+    '- If a template section has no source-backed substance, omit the body or leave only a neutral structural placeholder rather than reusing template wording.',
+    '- Signature blocks may follow the template layout, but remove unsupported signature ceremony text such as witness recitals, authority statements, or execution prose unless the source contains equivalent language.',
     '- Resolve conflicts in favor of the source substance and the template structure.',
     '- Keep the output polished and ready to save as the final aligned draft.',
     `- ${formatDirective}`,
     ...buildLanguageGuidance(languageProfile),
   ].join('\n');
+}
+
+function buildVerifiedAlignmentInstructions(outputFormat, languageProfile) {
+  const formatDirective =
+    outputFormat === 'latex'
+      ? [
+          'Return only LaTeX content with no Markdown fences.',
+          'Return the complete verified LaTeX document body only.',
+        ].join('\n')
+      : [
+          'Return only Markdown with no code fences.',
+          'Return the complete verified document only.',
+        ].join('\n');
+
+  return [
+    'You are a verified legal alignment agent.',
+    '',
+    'Mission',
+    'Verify and revise the Candidate Draft after generation so the final document keeps the Target Template format while using only Source Document substance.',
+    '',
+    'Verification Criteria',
+    '1. Format Fidelity Verification',
+    '- Compare the Candidate Draft against the Target Template for document architecture, heading depth, numbering style, recital placement, signature block shape, spacing, and neutral presentation cues.',
+    '- Preserve template-derived heading style, numbering labels, signature captions, and other neutral structural labels when they help the final document look like the target format.',
+    '- If a template title, heading, caption, recital label, or slot name contains template-specific substance not supported by the Source Document, keep the formatting role but replace the wording with source-grounded neutral wording.',
+    '- Do not import template-only body clauses, sample facts, legal obligations, explanatory prose, or boilerplate merely because they appear in a matching template slot.',
+    '',
+    '2. Source Grounding Verification',
+    '- Review the Candidate Draft section by section.',
+    '- For every substantive sentence, party name, date, monetary amount, duty, condition, exception, remedy, venue, governing law, liability allocation, or procedural requirement, confirm that the Source Document supports it.',
+    '- If a statement is supported only by the Target Template, remove it or rewrite it so it is fully grounded in the Source Document.',
+    '- If the Source Document is silent on a template slot, keep only a neutral structural placeholder if needed for format continuity; otherwise omit the unsupported body content.',
+    '- Signature blocks may preserve the Target Template layout and use source party names, but delete template-only signature ceremony text such as "IN WITNESS WHEREOF" sentences, authority recitals, or execution prose unless the Source Document contains equivalent language.',
+    '',
+    'Hard Constraints',
+    '- The final document must look and organize itself like the Target Template.',
+    '- The final document must not contain substantive content from the Target Template unless the Source Document independently supports the same content.',
+    '- Do not add new legal substance while revising; only reorganize, remove, neutralize, or source-ground existing candidate text.',
+    '- Resolve every content conflict in favor of the Source Document.',
+    '- Keep the final draft cohesive, polished, and ready to save as the user-facing output.',
+    `- ${formatDirective}`,
+    ...buildLanguageGuidance(languageProfile),
+  ].join('\n');
+}
+
+function buildSourceIntegrityReviewInstructions(outputFormat, languageProfile) {
+  return buildVerifiedAlignmentInstructions(outputFormat, languageProfile);
 }
 
 function buildTaskBrief({ sourcePath, templatePath, outputFormat, modelOutputFormat, languageProfile }) {
@@ -88,7 +142,41 @@ function buildTaskBrief({ sourcePath, templatePath, outputFormat, modelOutputFor
   return lines.join('\n');
 }
 
+function buildVerifiedAlignmentBrief({
+  sourcePath,
+  templatePath,
+  outputFormat,
+  modelOutputFormat,
+  languageProfile,
+}) {
+  const lines = [
+    'Verify and revise the generated candidate draft now.',
+    `Requested final output format: ${outputFormat}.`,
+    `Generation format for this step: ${modelOutputFormat}.`,
+    `Source file name: ${sourcePath}.`,
+    `Target template file name: ${templatePath}.`,
+    'The final document should be format-consistent with the target template.',
+    'The source document is the only authoritative source of legal substance, facts, and operative meaning.',
+    'The template may contribute structure, ordering, heading style, numbering, signature layout, and presentation only.',
+    'Delete, neutralize, or source-ground any candidate text that is supported only by the template.',
+  ];
+
+  if (languageProfile?.templateLanguage === 'japanese') {
+    lines.push('The target template appears to be Japanese. Keep Japanese drafting tone and numbering conventions while removing template-only substance.');
+  }
+
+  return lines.join('\n');
+}
+
+function buildSourceIntegrityReviewBrief(options) {
+  return buildVerifiedAlignmentBrief(options);
+}
+
 module.exports = {
   buildAlignmentInstructions,
   buildTaskBrief,
+  buildVerifiedAlignmentInstructions,
+  buildVerifiedAlignmentBrief,
+  buildSourceIntegrityReviewInstructions,
+  buildSourceIntegrityReviewBrief,
 };

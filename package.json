@@ -4,6 +4,7 @@
   "description": "Document alignment CLI built on the OpenAI Responses API.",
   "main": "src/align.js",
   "scripts": {
+    "test": "node --test",
     "start": "node src/server.js",
     "align": "node src/align.js",
     "align:example": "node src/align.js --source examples/source-nda.md --template examples/template-msa.md --output output/aligned-nda.md --format markdown",
