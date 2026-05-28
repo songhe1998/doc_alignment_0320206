@@ -153,12 +153,15 @@ test('verified alignment prompt separates target format from source substance', 
   assert.match(instructions, /verified legal alignment agent/);
   assert.match(instructions, /Format Fidelity Verification/);
   assert.match(instructions, /Source Grounding Verification/);
+  assert.match(instructions, /FORMAT-AWARE TEMPLATE OUTLINE/);
   assert.match(instructions, /final document must look and organize itself like the Target Template/);
   assert.match(instructions, /must not contain substantive content from the Target Template/);
+  assert.match(instructions, /Do not flatten template titles or headings into ordinary paragraphs/);
   assert.match(instructions, /delete template-only signature ceremony text/);
   assert.match(instructions, /Return only Markdown/);
   assert.match(instructions, /Japanese legal drafting conventions/);
   assert.match(brief, /format-consistent with the target template/);
   assert.match(brief, /only authoritative source of legal substance/);
+  assert.match(brief, /title, heading, line-feed, alignment, font-size, bold, and spacing cues/);
   assert.match(brief, /structure, ordering, heading style, numbering, signature layout, and presentation only/);
 });

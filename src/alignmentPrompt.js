@@ -40,6 +40,7 @@ function buildAlignmentInstructions(outputFormat, languageProfile) {
     'Execution Strategy',
     '1. Structural Extraction (The Container)',
     '- Analyze the Target Template for its visual DNA, header style, centered elements, recital pattern, signature block layout, and numbering logic.',
+    '- If the Target Template includes a FORMAT-AWARE TEMPLATE OUTLINE, treat [TITLE], [HEADING], [BLANK LINE], blank-line-before, align=center, font=Npt, bold, and style names as authoritative formatting cues.',
     '- Determine the narrative sequence used by the template, including preamble, recitals, operative covenants, miscellaneous provisions, and signature flow.',
     '- Reuse the template notation hierarchy exactly when possible, including Article/Section/Subsection patterns and lettering styles.',
     '',
@@ -56,6 +57,9 @@ function buildAlignmentInstructions(outputFormat, languageProfile) {
     '',
     '3. Refinement and Polish',
     '- Mirror the template use of capitalization, bolding, defined terms, and stylistic emphasis.',
+    '- Encode visible structure in the returned Markdown: use a top-level heading for the main title, lower-level headings for template headings, blank lines where the template has line feeds or extra paragraph spacing, and bold/emphasis where the template uses them.',
+    '- Do not promote signature-field labels such as （住所）, （代表者名）, Name, Title, or Address into document headings; keep them as signature-block labels.',
+    '- For DOCX/PDF targets, remember that Markdown is the formatting carrier before conversion; do not output important titles or headings as plain body paragraphs.',
     '- Ensure the result reads like a single cohesive instrument that looks like the template but acts like the source.',
     '',
     'Hard Constraints',
@@ -92,6 +96,7 @@ function buildVerifiedAlignmentInstructions(outputFormat, languageProfile) {
     'Verification Criteria',
     '1. Format Fidelity Verification',
     '- Compare the Candidate Draft against the Target Template for document architecture, heading depth, numbering style, recital placement, signature block shape, spacing, and neutral presentation cues.',
+    '- If the Target Template includes a FORMAT-AWARE TEMPLATE OUTLINE, verify that [TITLE] content became main-title Markdown, [HEADING] content became heading Markdown, [BLANK LINE] or blank-line-before became visible vertical spacing, align=center/title cues are preserved by title markup, and font/bold cues are reflected through heading or emphasis markup.',
     '- Preserve template-derived heading style, numbering labels, signature captions, and other neutral structural labels when they help the final document look like the target format.',
     '- If a template title, heading, caption, recital label, or slot name contains template-specific substance not supported by the Source Document, keep the formatting role but replace the wording with source-grounded neutral wording.',
     '- Do not import template-only body clauses, sample facts, legal obligations, explanatory prose, or boilerplate merely because they appear in a matching template slot.',
@@ -109,6 +114,8 @@ function buildVerifiedAlignmentInstructions(outputFormat, languageProfile) {
     '- Do not add new legal substance while revising; only reorganize, remove, neutralize, or source-ground existing candidate text.',
     '- Resolve every content conflict in favor of the Source Document.',
     '- Keep the final draft cohesive, polished, and ready to save as the user-facing output.',
+    '- Do not flatten template titles or headings into ordinary paragraphs.',
+    '- Do not turn signature-field labels such as （住所）, （代表者名）, Name, Title, or Address into heading markup.',
     `- ${formatDirective}`,
     ...buildLanguageGuidance(languageProfile),
   ].join('\n');
@@ -130,9 +137,10 @@ function buildTaskBrief({ sourcePath, templatePath, outputFormat, modelOutputFor
   ];
 
   if (outputFormat === 'docx') {
-    lines.push('Produce clean Markdown that preserves structure and numbering because it will be converted into a .docx file after generation.');
+    lines.push('Produce clean Markdown that preserves structure, numbering, title/headings, blank-line spacing, and emphasis because it will be converted into a .docx file after generation.');
+    lines.push('Use Markdown heading markup for title and section headings so the DOCX conversion can apply larger font sizes and heading styles.');
   } else if (outputFormat === 'pdf') {
-    lines.push('Produce clean Markdown that preserves structure and numbering because it will be converted into a .pdf file after generation.');
+    lines.push('Produce clean Markdown that preserves structure, numbering, title/headings, blank-line spacing, and emphasis because it will be converted into a .pdf file after generation.');
   }
 
   if (languageProfile?.templateLanguage === 'japanese') {
@@ -158,6 +166,7 @@ function buildVerifiedAlignmentBrief({
     'The final document should be format-consistent with the target template.',
     'The source document is the only authoritative source of legal substance, facts, and operative meaning.',
     'The template may contribute structure, ordering, heading style, numbering, signature layout, and presentation only.',
+    'If a FORMAT-AWARE TEMPLATE OUTLINE is present, preserve its title, heading, line-feed, alignment, font-size, bold, and spacing cues using Markdown structure.',
     'Delete, neutralize, or source-ground any candidate text that is supported only by the template.',
   ];
 

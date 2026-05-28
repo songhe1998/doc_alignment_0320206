@@ -14,7 +14,8 @@ const {
   buildVerifiedAlignmentInstructions,
   buildVerifiedAlignmentBrief,
 } = require('./alignmentPrompt');
-const { loadDocumentText } = require('./documentLoader');
+const { applyTemplateDocxFormatting } = require('./docxFormatting');
+const { loadDocumentText, loadTemplatePromptText } = require('./documentLoader');
 
 dotenv.config({ quiet: true });
 
@@ -417,6 +418,7 @@ async function runVerifiedAgentLayer({
   languageProfile,
   sourceText,
   templateText,
+  templatePromptText,
   candidateDraft,
 }) {
   const response = await client.responses.create({
@@ -460,7 +462,7 @@ async function runVerifiedAgentLayer({
             text: [
               `Target Template (${path.basename(templatePath)}): structure and presentation only; do not preserve its unsupported content.`,
               'BEGIN TARGET TEMPLATE',
-              templateText,
+              templatePromptText || templateText,
               'END TARGET TEMPLATE',
             ].join('\n\n'),
           },
@@ -554,6 +556,7 @@ async function runAlignment(options) {
   if (!templateText) {
     throw new Error(`No text could be extracted from template file: ${templatePath}`);
   }
+  const templatePromptText = await loadTemplatePromptText(templatePath);
 
   const languageProfile = detectLanguageProfile(sourceText, templateText);
 
@@ -599,7 +602,7 @@ async function runAlignment(options) {
             text: [
               `Target Template (${path.basename(templatePath)}): reuse this document's layout signature, sequencing, numbering logic, recital style, and presentation patterns.`,
               'BEGIN TARGET TEMPLATE',
-              templateText,
+              templatePromptText,
               'END TARGET TEMPLATE',
             ].join('\n\n'),
           },
@@ -626,6 +629,7 @@ async function runAlignment(options) {
     languageProfile,
     sourceText,
     templateText,
+    templatePromptText,
     candidateDraft: alignedDocument,
   });
   const finalDocument = verificationResult.verifiedDocument;
@@ -633,6 +637,14 @@ async function runAlignment(options) {
   if (outputFormat === 'docx') {
     logger.info('Converting generated Markdown to DOCX');
     convertMarkdownToDocx(finalDocument, outputPath, templatePath);
+    if (path.extname(templatePath).toLowerCase() === '.docx') {
+      logger.info('Applying target DOCX title, heading, spacing, and font cues');
+      try {
+        applyTemplateDocxFormatting(outputPath, templatePath);
+      } catch (error) {
+        logger.warn(`DOCX visual formatting pass skipped: ${error.message}`);
+      }
+    }
   } else if (outputFormat === 'pdf') {
     const pdfOptions = resolvePdfConversionOptions({
       explicitPdfEngine: options.pdfEngine,
