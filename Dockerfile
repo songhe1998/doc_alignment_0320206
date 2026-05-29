@@ -15,6 +15,7 @@ RUN apt-get update && \
       fonts-ipafont-gothic \
       fonts-ipafont-mincho \
       fonts-noto-cjk \
+      lmodern \
       pandoc \
       python3 \
       python3-venv \

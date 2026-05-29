@@ -142,7 +142,7 @@ Default Render environment values are defined in `render.yaml`:
 
 Notes for hosted use:
 
-- The Docker image installs `pandoc`, `xelatex`, Japanese fonts, and PyMuPDF so `docx`, `pdf`, and Japanese/CJK PDF output work in Render.
+- The Docker image installs `pandoc`, `xelatex`, `lmodern`, Japanese fonts, and PyMuPDF so `docx`, `pdf`, and Japanese/CJK PDF output work in Render.
 - Browser-triggered files are stored under `./output/ui/<request-id>/` and old runs are cleaned up automatically based on `OUTPUT_RETENTION_HOURS`.
 - Render instances use ephemeral local storage by default, so generated files are meant for immediate download, not long-term retention.
 
@@ -167,7 +167,7 @@ Notes for hosted use:
 - For auto-format output, `.pdf` maps to PDF, `.docx` maps to DOCX, and text-like inputs map to Markdown.
 - `docx` output requires `pandoc` on PATH.
 - `pdf` output requires `pandoc` plus a working PDF engine on PATH.
-- For Japanese/CJK PDF output, the CLI now auto-switches to `xelatex` when available and applies a Japanese-capable font profile.
+- For PDF output, the CLI now prefers `xelatex` when available and applies a Japanese-capable font profile for Japanese/CJK content.
 - If you explicitly force `pdflatex` for Japanese/CJK content, generation may fail or drop glyphs.
 - Scanned PDFs without selectable text are not OCR'd by this version.
 - For the highest visual fidelity, prefer `--format latex`.

@@ -154,7 +154,12 @@ function ensurePandoc() {
 }
 
 function resolvePdfEngine(value) {
-  return value || process.env.PANDOC_PDF_ENGINE || null;
+  const engine = (value || process.env.PANDOC_PDF_ENGINE || '').trim();
+  if (!engine || engine.toLowerCase() === 'auto') {
+    return null;
+  }
+
+  return engine;
 }
 
 let cachedFontCatalog = null;
@@ -214,20 +219,20 @@ function resolvePdfConversionOptions({ explicitPdfEngine, markdown, sourceText, 
   const hasJapaneseContent =
     containsJapaneseOrCjk(markdown) || containsJapaneseOrCjk(sourceText) || containsJapaneseOrCjk(templateText);
 
-  if (hasJapaneseContent && commandExists('xelatex')) {
+  if (commandExists('xelatex')) {
     return {
       engine: 'xelatex',
-      isJapaneseAware: true,
-      fontProfile: resolveJapanesePdfProfile(),
+      isJapaneseAware: hasJapaneseContent,
+      fontProfile: hasJapaneseContent ? resolveJapanesePdfProfile() : null,
       warning: null,
     };
   }
 
-  if (hasJapaneseContent && commandExists('lualatex')) {
+  if (commandExists('lualatex')) {
     return {
       engine: 'lualatex',
-      isJapaneseAware: true,
-      fontProfile: resolveJapanesePdfProfile(),
+      isJapaneseAware: hasJapaneseContent,
+      fontProfile: hasJapaneseContent ? resolveJapanesePdfProfile() : null,
       warning: null,
     };
   }
