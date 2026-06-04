@@ -14,8 +14,12 @@ const {
   buildVerifiedAlignmentInstructions,
   buildVerifiedAlignmentBrief,
 } = require('./alignmentPrompt');
-const { applyTemplateDocxFormatting } = require('./docxFormatting');
+const {
+  applyTemplateDocxFormatting,
+  extractDocxParagraphProfiles,
+} = require('./docxFormatting');
 const { loadDocumentText, loadTemplatePromptText } = require('./documentLoader');
+const { extractPdfLineProfiles } = require('./pdfFormatting');
 
 dotenv.config({ quiet: true });
 
@@ -52,6 +56,10 @@ const OUTPUT_FORMAT_TO_EXTENSION = {
   docx: '.docx',
   pdf: '.pdf',
 };
+const ARTICLE_TITLE_PREFIX_REGEX =
+  /^(第[0-9０-９一二三四五六七八九十百]+[条章節]|ARTICLE\s+[0-9IVXLCDM]+|Section\s+[0-9.]+)\s*[：:．.\-–—　\s]+(.+)$/i;
+const LEGAL_TITLE_REMAINDER_REGEX =
+  /(契約書|合意書|覚書|規約|約款|Agreement|Contract|NDA|Non[-\s]?Disclosure|Disclosure|Confidentiality|License|Terms|Policy|Statement|Addendum|Amendment)/i;
 const EXTENSION_TO_OUTPUT_FORMAT = new Map([
   ['.md', 'markdown'],
   ['.markdown', 'markdown'],
@@ -291,6 +299,158 @@ function buildDefaultOutputFilename(sourcePath, templatePath, outputFormat) {
   return `${sourceStem}-aligned-to-${templateStem}${OUTPUT_FORMAT_TO_EXTENSION[outputFormat]}`;
 }
 
+function unwrapSimpleMarkdownLine(line) {
+  const headingMatch = line.match(/^(\s{0,3}(?:#{1,6}\s*)?)(.*)$/);
+  const headingPrefix = headingMatch ? headingMatch[1] : '';
+  let body = headingMatch ? headingMatch[2] : line;
+  let emphasisPrefix = '';
+  let emphasisSuffix = '';
+
+  const boldMatch = body.match(/^(\*\*|__)(.+)\1\s*$/);
+  if (boldMatch) {
+    emphasisPrefix = boldMatch[1];
+    emphasisSuffix = boldMatch[1];
+    body = boldMatch[2];
+  }
+
+  return {
+    prefix: headingPrefix + emphasisPrefix,
+    body,
+    suffix: emphasisSuffix,
+  };
+}
+
+function isTitleLikeArticleRemainder(value) {
+  const text = value.trim();
+  if (!text || text.length > 120) {
+    return false;
+  }
+
+  if (/^[（(][^）)]{1,80}[）)]$/.test(text)) {
+    return false;
+  }
+
+  if (/[。.!?！？]$/.test(text)) {
+    return false;
+  }
+
+  return LEGAL_TITLE_REMAINDER_REGEX.test(text);
+}
+
+function sanitizeTitleArticleCollision(line) {
+  const { prefix, body, suffix } = unwrapSimpleMarkdownLine(line);
+  const match = body.trim().match(ARTICLE_TITLE_PREFIX_REGEX);
+  if (!match || !isTitleLikeArticleRemainder(match[2])) {
+    return line;
+  }
+
+  return `${prefix}${match[2].trim()}${suffix}`;
+}
+
+function sanitizeGeneratedDocumentStructure(documentText) {
+  const lines = String(documentText || '').split('\n');
+  const firstNonEmptyIndex = lines.findIndex((line) => line.trim());
+  if (firstNonEmptyIndex === -1) {
+    return documentText;
+  }
+
+  const original = lines[firstNonEmptyIndex];
+  const sanitized = sanitizeTitleArticleCollision(original);
+  if (sanitized === original) {
+    return documentText;
+  }
+
+  lines[firstNonEmptyIndex] = sanitized;
+  return lines.join('\n');
+}
+
+function stripInlineMarkdown(value) {
+  return String(value || '')
+    .trim()
+    .replace(/^(\*\*|__)([\s\S]+)\1$/, '$2')
+    .replace(/^(\*|_)([\s\S]+)\1$/, '$2')
+    .trim();
+}
+
+function escapeLatexText(value) {
+  return String(value || '')
+    .replace(/\\/g, '\\textbackslash{}')
+    .replace(/&/g, '\\&')
+    .replace(/%/g, '\\%')
+    .replace(/\$/g, '\\$')
+    .replace(/#/g, '\\#')
+    .replace(/_/g, '\\_')
+    .replace(/{/g, '\\{')
+    .replace(/}/g, '\\}')
+    .replace(/~/g, '\\textasciitilde{}')
+    .replace(/\^/g, '\\textasciicircum{}');
+}
+
+function resolveLatexTitleSize(fontSizePt) {
+  if (!Number.isFinite(fontSizePt)) {
+    return '\\Large';
+  }
+  if (fontSizePt >= 18) {
+    return '\\huge';
+  }
+  if (fontSizePt >= 16) {
+    return '\\LARGE';
+  }
+  if (fontSizePt >= 14) {
+    return '\\Large';
+  }
+  return '\\large';
+}
+
+function centerFirstTitleLineForPdf(markdown, titleProfile) {
+  if (!titleProfile || titleProfile.alignment !== 'center') {
+    return markdown;
+  }
+
+  const lines = String(markdown || '').split('\n');
+  const firstNonEmptyIndex = lines.findIndex((line) => line.trim());
+  if (firstNonEmptyIndex === -1 || /^\\begin\{center\}/.test(lines[firstNonEmptyIndex].trim())) {
+    return markdown;
+  }
+
+  const headingMatch = lines[firstNonEmptyIndex].match(/^\s{0,3}#{1,6}\s+(.+)$/);
+  const titleText = stripInlineMarkdown(headingMatch ? headingMatch[1] : lines[firstNonEmptyIndex]);
+  if (!titleText) {
+    return markdown;
+  }
+
+  const sizeCommand = resolveLatexTitleSize(titleProfile.fontSizePt);
+  lines[firstNonEmptyIndex] = [
+    '\\begin{center}',
+    `{${sizeCommand}\\bfseries ${escapeLatexText(titleText)}\\par}`,
+    '\\end{center}',
+  ].join('\n');
+  return lines.join('\n');
+}
+
+function getTemplateTitleProfile(templatePath) {
+  const extension = path.extname(templatePath).toLowerCase();
+
+  try {
+    if (extension === '.docx') {
+      return extractDocxParagraphProfiles(templatePath).find((profile) => profile.role === 'title') || null;
+    }
+
+    if (extension === '.pdf') {
+      return extractPdfLineProfiles(templatePath).find((profile) => profile.role === 'title') || null;
+    }
+  } catch (error) {
+    return null;
+  }
+
+  return null;
+}
+
+function applyTemplatePdfMarkdownFormatting(markdown, templatePath) {
+  const titleProfile = getTemplateTitleProfile(templatePath);
+  return centerFirstTitleLineForPdf(markdown, titleProfile);
+}
+
 function resolveOutputPath({ outputArg, outputFormat, sourcePath, templatePath }) {
   const filename = buildDefaultOutputFilename(sourcePath, templatePath, outputFormat);
   const canonicalExtension = OUTPUT_FORMAT_TO_EXTENSION[outputFormat];
@@ -365,7 +525,7 @@ function convertMarkdownToPdf(markdown, outputPath, pdfOptions) {
     const pandocArgs = [
       tempMarkdownPath,
       '-f',
-      'gfm',
+      'markdown+raw_tex',
       '-o',
       outputPath,
       `--pdf-engine=${pdfOptions.engine}`,
@@ -637,7 +797,10 @@ async function runAlignment(options) {
     templatePromptText,
     candidateDraft: alignedDocument,
   });
-  const finalDocument = verificationResult.verifiedDocument;
+  const finalDocument = sanitizeGeneratedDocumentStructure(verificationResult.verifiedDocument);
+  if (finalDocument !== verificationResult.verifiedDocument) {
+    logger.info('Normalized a title/article label collision before output conversion');
+  }
 
   if (outputFormat === 'docx') {
     logger.info('Converting generated Markdown to DOCX');
@@ -651,9 +814,10 @@ async function runAlignment(options) {
       }
     }
   } else if (outputFormat === 'pdf') {
+    const pdfDocument = applyTemplatePdfMarkdownFormatting(finalDocument, templatePath);
     const pdfOptions = resolvePdfConversionOptions({
       explicitPdfEngine: options.pdfEngine,
-      markdown: finalDocument,
+      markdown: pdfDocument,
       sourceText,
       templateText,
     });
@@ -667,7 +831,7 @@ async function runAlignment(options) {
         ? ` using ${pdfOptions.fontProfile.serif}`
         : '';
     logger.info(`Converting generated Markdown to PDF with ${pdfOptions.engine}${fontSuffix}`);
-    convertMarkdownToPdf(finalDocument, outputPath, pdfOptions);
+    convertMarkdownToPdf(pdfDocument, outputPath, pdfOptions);
   } else {
     fs.writeFileSync(outputPath, `${finalDocument}\n`, 'utf8');
   }
@@ -703,5 +867,7 @@ async function runAlignment(options) {
 module.exports = {
   runAlignment,
   runVerifiedAgentLayer,
+  applyTemplatePdfMarkdownFormatting,
+  sanitizeGeneratedDocumentStructure,
   VALID_FORMATS,
 };

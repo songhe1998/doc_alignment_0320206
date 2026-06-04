@@ -6,7 +6,7 @@ const os = require('os');
 const path = require('path');
 const test = require('node:test');
 
-const { runAlignment } = require('../src/alignCore');
+const { runAlignment, sanitizeGeneratedDocumentStructure } = require('../src/alignCore');
 const {
   buildVerifiedAlignmentBrief,
   buildVerifiedAlignmentInstructions,
@@ -164,4 +164,41 @@ test('verified alignment prompt separates target format from source substance', 
   assert.match(brief, /only authoritative source of legal substance/);
   assert.match(brief, /title, heading, line-feed, alignment, font-size, bold, and spacing cues/);
   assert.match(brief, /structure, ordering, heading style, numbering, signature layout, and presentation only/);
+});
+
+test('sanitizeGeneratedDocumentStructure separates accidental title/article collisions only on title line', () => {
+  const document = [
+    '# **第1条　秘密保持契約書**',
+    '',
+    '前文です。',
+    '',
+    '## 第1条（目的）',
+    '',
+    '本文です。',
+  ].join('\n');
+
+  const sanitized = sanitizeGeneratedDocumentStructure(document);
+
+  assert.equal(
+    sanitized,
+    [
+      '# **秘密保持契約書**',
+      '',
+      '前文です。',
+      '',
+      '## 第1条（目的）',
+      '',
+      '本文です。',
+    ].join('\n'),
+  );
+});
+
+test('sanitizeGeneratedDocumentStructure leaves real first article headings alone', () => {
+  const document = [
+    '第1条（目的）',
+    '',
+    '本文です。',
+  ].join('\n');
+
+  assert.equal(sanitizeGeneratedDocumentStructure(document), document);
 });
