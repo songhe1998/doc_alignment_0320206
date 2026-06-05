@@ -19,6 +19,10 @@ Options:
   --reasoning <level>         none|low|medium|high|xhigh (default: medium)
   --max-output-tokens <n>     Response token cap (default: 12000)
   --pdf-engine <engine>       Pandoc PDF engine override (default: auto; PANDOC_PDF_ENGINE overrides)
+  --visual-check <auto|true|false>  Render DOCX/PDF outputs and run a VLM visual QA pass (default: auto)
+  --visual-check-model <model>      Override model for the VLM visual QA pass
+  --visual-check-max-pages <n>      Number of leading pages to compare visually (default: 2)
+  --visual-check-repair-attempts <n>  Visual-format repair attempts after a failed visual check (default: 1)
   --help                      Show this message
 
 Examples:
@@ -82,6 +86,10 @@ async function main() {
     reasoning: args.reasoning,
     maxOutputTokens: args['max-output-tokens'],
     pdfEngine: args['pdf-engine'],
+    visualCheck: args['visual-check'],
+    visualCheckModel: args['visual-check-model'],
+    visualCheckMaxPages: args['visual-check-max-pages'],
+    visualCheckRepairAttempts: args['visual-check-repair-attempts'],
     logger: console,
   });
 }

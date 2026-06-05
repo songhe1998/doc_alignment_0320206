@@ -129,6 +129,58 @@ function buildSourceIntegrityReviewInstructions(outputFormat, languageProfile) {
   return buildVerifiedAlignmentInstructions(outputFormat, languageProfile);
 }
 
+function buildVisualRepairInstructions(outputFormat, languageProfile) {
+  const formatDirective =
+    outputFormat === 'latex'
+      ? 'Return only LaTeX content with no Markdown fences.'
+      : 'Return only Markdown with no code fences.';
+
+  return [
+    'You are a visual-format repair agent for legal document alignment.',
+    '',
+    'Mission',
+    'Revise the Candidate Draft only enough to fix visual layout issues reported by the rendered-output vision checker.',
+    '',
+    'Rules',
+    '- Preserve the Source Document as the only legal substance authority.',
+    '- Do not add, remove, or alter legal duties, facts, dates, parties, remedies, governing law, or commercial terms.',
+    '- Treat the Target Template as structure and presentation only.',
+    '- Apply the visual checker report as formatting guidance: title markup, heading levels, blank lines, emphasis, numbering presentation, and signature-block structure.',
+    '- Fix title/article merges by keeping the main title as the first title line and placing article labels in the article sequence below it.',
+    '- Do not use HTML tags such as <div>, <center>, span styles, or raw layout wrappers; use Markdown headings, blank lines, bold/emphasis, and ordinary text only.',
+    '- Do not promote signature-field labels such as （住所）, （代表者名）, Name, Title, or Address into headings.',
+    '- If a visual issue would require adding unsupported legal substance, ignore the unsupported substance and make only the structural/formatting change.',
+    '- Return the complete repaired draft, not a patch or explanation.',
+    `- ${formatDirective}`,
+    ...buildLanguageGuidance(languageProfile),
+  ].join('\n');
+}
+
+function buildVisualRepairBrief({
+  sourcePath,
+  templatePath,
+  outputFormat,
+  modelOutputFormat,
+  languageProfile,
+}) {
+  const lines = [
+    'Repair the generated draft for visual-format fidelity now.',
+    `Requested final output format: ${outputFormat}.`,
+    `Generation format for this repair step: ${modelOutputFormat}.`,
+    `Source file name: ${sourcePath}.`,
+    `Target template file name: ${templatePath}.`,
+    'Use the visual checker report to repair presentation and layout only.',
+    'Keep all legal substance grounded in the Source Document.',
+    'Keep the output visually organized like the Target Template.',
+  ];
+
+  if (languageProfile?.templateLanguage === 'japanese') {
+    lines.push('The target template appears to be Japanese. Preserve Japanese legal drafting tone and numbering conventions while repairing visual structure.');
+  }
+
+  return lines.join('\n');
+}
+
 function buildTaskBrief({ sourcePath, templatePath, outputFormat, modelOutputFormat, languageProfile }) {
   const lines = [
     'Generate the final aligned document now.',
@@ -193,4 +245,6 @@ module.exports = {
   buildVerifiedAlignmentBrief,
   buildSourceIntegrityReviewInstructions,
   buildSourceIntegrityReviewBrief,
+  buildVisualRepairInstructions,
+  buildVisualRepairBrief,
 };

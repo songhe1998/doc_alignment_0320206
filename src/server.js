@@ -235,6 +235,10 @@ app.post(
         reasoning: req.body.reasoning,
         maxOutputTokens: req.body.maxOutputTokens,
         pdfEngine: req.body.pdfEngine,
+        visualCheck: req.body.visualCheck,
+        visualCheckModel: req.body.visualCheckModel,
+        visualCheckMaxPages: req.body.visualCheckMaxPages,
+        visualCheckRepairAttempts: req.body.visualCheckRepairAttempts,
         logger,
       });
 
@@ -249,6 +253,7 @@ app.post(
         model: result.model,
         requestedModel: result.requestedModel,
         usage: result.usage,
+        visualChecks: result.visualChecks,
         logs,
       });
     } catch (error) {

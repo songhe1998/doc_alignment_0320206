@@ -13,6 +13,8 @@ const {
   buildTaskBrief,
   buildVerifiedAlignmentInstructions,
   buildVerifiedAlignmentBrief,
+  buildVisualRepairInstructions,
+  buildVisualRepairBrief,
 } = require('./alignmentPrompt');
 const {
   applyTemplateDocxFormatting,
@@ -20,6 +22,12 @@ const {
 } = require('./docxFormatting');
 const { loadDocumentText, loadTemplatePromptText } = require('./documentLoader');
 const { extractPdfLineProfiles } = require('./pdfFormatting');
+const {
+  resolveVisualCheckOptions,
+  runRenderedVisualCheck,
+  shouldRunVisualCheck,
+  summarizeVisualReport,
+} = require('./visualChecker');
 
 dotenv.config({ quiet: true });
 
@@ -127,6 +135,21 @@ function normalizeMaxOutputTokens(value) {
     throw new Error(`Invalid max output tokens value: ${raw}`);
   }
   return parsed;
+}
+
+function combineUsages(usages) {
+  return usages.reduce(
+    (combined, usage) => ({
+      input_tokens: combined.input_tokens + (usage?.input_tokens || 0),
+      output_tokens: combined.output_tokens + (usage?.output_tokens || 0),
+      total_tokens: combined.total_tokens + (usage?.total_tokens || 0),
+    }),
+    { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+  );
+}
+
+function hasUsage(usage) {
+  return Boolean(usage?.input_tokens || usage?.output_tokens || usage?.total_tokens);
 }
 
 function containsJapaneseOrCjk(text) {
@@ -347,21 +370,74 @@ function sanitizeTitleArticleCollision(line) {
   return `${prefix}${match[2].trim()}${suffix}`;
 }
 
-function sanitizeGeneratedDocumentStructure(documentText) {
+function removeHtmlAlignmentWrappers(documentText) {
+  return String(documentText || '')
+    .replace(/^\s*<div\s+align=["']?center["']?\s*>\s*([\s\S]*?)\s*<\/div>\s*$/gim, '$1')
+    .replace(/^\s*<center\s*>\s*([\s\S]*?)\s*<\/center>\s*$/gim, '$1')
+    .replace(/^\s*<div\s+align=["']?center["']?\s*>\s*$/gim, '')
+    .replace(/^\s*<\/div>\s*$/gim, '')
+    .replace(/^\s*<center\s*>\s*$/gim, '')
+    .replace(/^\s*<\/center>\s*$/gim, '');
+}
+
+function isSplitNumberHeadingLine(value) {
+  return /^[0-9０-９]+[.)．。]$/.test(String(value || '').trim());
+}
+
+function isShortHeadingText(value) {
+  const text = stripInlineMarkdown(value);
+  if (!text || text.length > 140) {
+    return false;
+  }
+
+  if (/^(whereas|now,?\s+therefore|this agreement|the purpose|for purposes)\b/i.test(text)) {
+    return false;
+  }
+
+  return /[A-Za-z\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]/.test(text);
+}
+
+function normalizeSplitNumberedHeadings(documentText) {
   const lines = String(documentText || '').split('\n');
+  const normalized = [];
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (!isSplitNumberHeadingLine(line)) {
+      normalized.push(line);
+      continue;
+    }
+
+    let headingIndex = index + 1;
+    while (headingIndex < lines.length && !lines[headingIndex].trim()) {
+      headingIndex += 1;
+    }
+
+    if (headingIndex < lines.length && isShortHeadingText(lines[headingIndex])) {
+      normalized.push(`**${line.trim()} ${stripInlineMarkdown(lines[headingIndex])}**`);
+      index = headingIndex;
+      continue;
+    }
+
+    normalized.push(line);
+  }
+
+  return normalized.join('\n');
+}
+
+function sanitizeGeneratedDocumentStructure(documentText) {
+  const strippedText = normalizeSplitNumberedHeadings(removeHtmlAlignmentWrappers(documentText));
+  const lines = strippedText.split('\n');
   const firstNonEmptyIndex = lines.findIndex((line) => line.trim());
   if (firstNonEmptyIndex === -1) {
-    return documentText;
+    return strippedText;
   }
 
   const original = lines[firstNonEmptyIndex];
   const sanitized = sanitizeTitleArticleCollision(original);
-  if (sanitized === original) {
-    return documentText;
-  }
-
   lines[firstNonEmptyIndex] = sanitized;
-  return lines.join('\n');
+  const result = lines.join('\n');
+  return result === documentText ? documentText : result;
 }
 
 function stripInlineMarkdown(value) {
@@ -402,7 +478,23 @@ function resolveLatexTitleSize(fontSizePt) {
   return '\\large';
 }
 
-function centerFirstTitleLineForPdf(markdown, titleProfile) {
+function renderCenteredLatexBlock(text, { sizeCommand = '\\Large', bold = true } = {}) {
+  const boldCommand = bold ? '\\bfseries ' : '';
+  return [
+    '\\begin{center}',
+    `{${sizeCommand} ${boldCommand}${escapeLatexText(text)}\\par}`,
+    '\\end{center}',
+  ].join('\n');
+}
+
+function isArticleOrSectionLine(value) {
+  return /^(?:第[0-9０-９一二三四五六七八九十百]+[条章節]|ARTICLE\s+[0-9IVXLCDM]+|Section\s+[0-9.]+)/i.test(
+    stripInlineMarkdown(value),
+  );
+}
+
+function centerOpeningLinesForPdf(markdown, openingProfiles) {
+  const titleProfile = openingProfiles?.title || null;
   if (!titleProfile || titleProfile.alignment !== 'center') {
     return markdown;
   }
@@ -420,35 +512,61 @@ function centerFirstTitleLineForPdf(markdown, titleProfile) {
   }
 
   const sizeCommand = resolveLatexTitleSize(titleProfile.fontSizePt);
-  lines[firstNonEmptyIndex] = [
-    '\\begin{center}',
-    `{${sizeCommand}\\bfseries ${escapeLatexText(titleText)}\\par}`,
-    '\\end{center}',
-  ].join('\n');
+  lines[firstNonEmptyIndex] = renderCenteredLatexBlock(titleText, { sizeCommand, bold: true });
+
+  const subtitleProfile = openingProfiles?.subtitle || null;
+  if (subtitleProfile?.alignment === 'center') {
+    const subtitleIndex = lines.findIndex((line, index) => index > firstNonEmptyIndex && line.trim());
+    const subtitleText = subtitleIndex === -1 ? '' : stripInlineMarkdown(lines[subtitleIndex]);
+    if (subtitleText && subtitleText.length <= 160 && !isArticleOrSectionLine(subtitleText)) {
+      lines[subtitleIndex] = renderCenteredLatexBlock(subtitleText, {
+        sizeCommand: resolveLatexTitleSize(subtitleProfile.fontSizePt || 11),
+        bold: Boolean(subtitleProfile.bold || subtitleProfile.role === 'heading'),
+      });
+    }
+  }
+
   return lines.join('\n');
 }
 
-function getTemplateTitleProfile(templatePath) {
+function isCenteredSubtitleProfile(profile) {
+  if (!profile || profile.isEmpty || profile.alignment !== 'center') {
+    return false;
+  }
+
+  if (profile.text.length > 160 || /^[。.!?！？]/.test(profile.text)) {
+    return false;
+  }
+
+  return profile.role === 'heading' || profile.bold || Number.isFinite(profile.fontSizePt);
+}
+
+function getTemplateOpeningProfiles(templatePath) {
   const extension = path.extname(templatePath).toLowerCase();
 
   try {
+    let profiles = [];
     if (extension === '.docx') {
-      return extractDocxParagraphProfiles(templatePath).find((profile) => profile.role === 'title') || null;
+      profiles = extractDocxParagraphProfiles(templatePath);
+    } else if (extension === '.pdf') {
+      profiles = extractPdfLineProfiles(templatePath);
     }
 
-    if (extension === '.pdf') {
-      return extractPdfLineProfiles(templatePath).find((profile) => profile.role === 'title') || null;
-    }
+    const nonEmpty = profiles.filter((profile) => !profile.isEmpty);
+    const titleIndex = nonEmpty.findIndex((profile) => profile.role === 'title');
+    const title = titleIndex === -1 ? null : nonEmpty[titleIndex];
+    const subtitle = titleIndex === -1 ? null : nonEmpty.slice(titleIndex + 1, titleIndex + 4).find(isCenteredSubtitleProfile) || null;
+    return { title, subtitle };
   } catch (error) {
-    return null;
+    return { title: null, subtitle: null };
   }
 
-  return null;
+  return { title: null, subtitle: null };
 }
 
 function applyTemplatePdfMarkdownFormatting(markdown, templatePath) {
-  const titleProfile = getTemplateTitleProfile(templatePath);
-  return centerFirstTitleLineForPdf(markdown, titleProfile);
+  const openingProfiles = getTemplateOpeningProfiles(templatePath);
+  return centerOpeningLinesForPdf(markdown, openingProfiles);
 }
 
 function resolveOutputPath({ outputArg, outputFormat, sourcePath, templatePath }) {
@@ -529,10 +647,13 @@ function convertMarkdownToPdf(markdown, outputPath, pdfOptions) {
       '-o',
       outputPath,
       `--pdf-engine=${pdfOptions.engine}`,
+      '-Vgeometry=margin=1in',
     ];
 
     if (pdfOptions.isJapaneseAware && pdfOptions.fontProfile?.serif) {
       pandocArgs.push(`-Vmainfont=${pdfOptions.fontProfile.serif}`);
+      pandocArgs.push(`-VCJKmainfont=${pdfOptions.fontProfile.serif}`);
+      pandocArgs.push('-Vlang=ja-JP');
     }
     if (pdfOptions.isJapaneseAware && pdfOptions.fontProfile?.sans) {
       pandocArgs.push(`-Vsansfont=${pdfOptions.fontProfile.sans}`);
@@ -545,6 +666,55 @@ function convertMarkdownToPdf(markdown, outputPath, pdfOptions) {
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
+}
+
+function writeRenderedOutputFromMarkdown({
+  document,
+  outputFormat,
+  outputPath,
+  templatePath,
+  options,
+  sourceText,
+  templateText,
+  logger,
+}) {
+  if (outputFormat === 'docx') {
+    logger.info('Converting generated Markdown to DOCX');
+    convertMarkdownToDocx(document, outputPath, templatePath);
+    if (path.extname(templatePath).toLowerCase() === '.docx') {
+      logger.info('Applying target DOCX title, heading, spacing, and font cues');
+      try {
+        applyTemplateDocxFormatting(outputPath, templatePath);
+      } catch (error) {
+        logger.warn(`DOCX visual formatting pass skipped: ${error.message}`);
+      }
+    }
+    return;
+  }
+
+  if (outputFormat === 'pdf') {
+    const pdfDocument = applyTemplatePdfMarkdownFormatting(document, templatePath);
+    const pdfOptions = resolvePdfConversionOptions({
+      explicitPdfEngine: options.pdfEngine,
+      markdown: pdfDocument,
+      sourceText,
+      templateText,
+    });
+
+    if (pdfOptions.warning) {
+      logger.warn(pdfOptions.warning);
+    }
+
+    const fontSuffix =
+      pdfOptions.isJapaneseAware && pdfOptions.fontProfile?.serif
+        ? ` using ${pdfOptions.fontProfile.serif}`
+        : '';
+    logger.info(`Converting generated Markdown to PDF with ${pdfOptions.engine}${fontSuffix}`);
+    convertMarkdownToPdf(pdfDocument, outputPath, pdfOptions);
+    return;
+  }
+
+  fs.writeFileSync(outputPath, `${document}\n`, 'utf8');
 }
 
 async function resolveModel(client, requestedModel, isExplicitModel) {
@@ -662,6 +832,112 @@ async function runVerifiedAgentLayer({
   };
 }
 
+async function runVisualRepairLayer({
+  client,
+  model,
+  reasoning,
+  maxOutputTokens,
+  sourcePath,
+  templatePath,
+  outputFormat,
+  modelOutputFormat,
+  languageProfile,
+  sourceText,
+  templateText,
+  templatePromptText,
+  candidateDraft,
+  visualReport,
+}) {
+  const response = await client.responses.create({
+    model,
+    reasoning: { effort: reasoning === 'none' ? 'low' : reasoning },
+    max_output_tokens: maxOutputTokens,
+    input: [
+      {
+        role: 'developer',
+        content: buildVisualRepairInstructions(modelOutputFormat, languageProfile),
+      },
+      {
+        role: 'user',
+        content: buildVisualRepairBrief({
+          sourcePath: path.basename(sourcePath),
+          templatePath: path.basename(templatePath),
+          outputFormat,
+          modelOutputFormat,
+          languageProfile,
+        }),
+      },
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'input_text',
+            text: [
+              `Source Document (${path.basename(sourcePath)}): this is the only authoritative legal substance.`,
+              'BEGIN SOURCE DOCUMENT',
+              sourceText,
+              'END SOURCE DOCUMENT',
+            ].join('\n\n'),
+          },
+        ],
+      },
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'input_text',
+            text: [
+              `Target Template (${path.basename(templatePath)}): structure and presentation only; do not preserve unsupported content.`,
+              'BEGIN TARGET TEMPLATE',
+              templatePromptText || templateText,
+              'END TARGET TEMPLATE',
+            ].join('\n\n'),
+          },
+        ],
+      },
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'input_text',
+            text: [
+              'Visual checker report: repair these visual-format issues only.',
+              'BEGIN VISUAL CHECK REPORT',
+              JSON.stringify(visualReport, null, 2),
+              'END VISUAL CHECK REPORT',
+            ].join('\n\n'),
+          },
+        ],
+      },
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'input_text',
+            text: [
+              'Candidate Draft: return the complete visually repaired draft.',
+              'BEGIN CANDIDATE DRAFT',
+              candidateDraft,
+              'END CANDIDATE DRAFT',
+            ].join('\n\n'),
+          },
+        ],
+      },
+    ],
+  });
+
+  const repairedDocument = response.output_text ? response.output_text.trim() : '';
+  if (!repairedDocument) {
+    throw new Error(`Visual repair layer returned no text output. Response ID: ${response.id}`);
+  }
+
+  return {
+    repairedDocument,
+    usage: response.usage || {},
+    responseId: response.id,
+  };
+}
+
 async function runAlignment(options) {
   const logger = createLogger(options.logger);
 
@@ -689,6 +965,7 @@ async function runAlignment(options) {
   const isExplicitModel = Boolean(options.model || process.env.OPENAI_MODEL);
   const reasoning = normalizeReasoning(options.reasoning);
   const maxOutputTokens = normalizeMaxOutputTokens(options.maxOutputTokens);
+  const visualCheckOptions = resolveVisualCheckOptions(options);
 
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
 
@@ -709,6 +986,7 @@ async function runAlignment(options) {
   if (fallbackMessage) {
     logger.warn(fallbackMessage);
   }
+  const visualCheckModel = visualCheckOptions.model || model;
 
   logger.info(`Extracting source document text: ${path.basename(sourcePath)}`);
   const sourceText = await loadDocumentText(sourcePath);
@@ -797,54 +1075,107 @@ async function runAlignment(options) {
     templatePromptText,
     candidateDraft: alignedDocument,
   });
-  const finalDocument = sanitizeGeneratedDocumentStructure(verificationResult.verifiedDocument);
+  let finalDocument = sanitizeGeneratedDocumentStructure(verificationResult.verifiedDocument);
   if (finalDocument !== verificationResult.verifiedDocument) {
     logger.info('Normalized a title/article label collision before output conversion');
   }
 
-  if (outputFormat === 'docx') {
-    logger.info('Converting generated Markdown to DOCX');
-    convertMarkdownToDocx(finalDocument, outputPath, templatePath);
-    if (path.extname(templatePath).toLowerCase() === '.docx') {
-      logger.info('Applying target DOCX title, heading, spacing, and font cues');
-      try {
-        applyTemplateDocxFormatting(outputPath, templatePath);
-      } catch (error) {
-        logger.warn(`DOCX visual formatting pass skipped: ${error.message}`);
+  writeRenderedOutputFromMarkdown({
+    document: finalDocument,
+    outputFormat,
+    outputPath,
+    templatePath,
+    options,
+    sourceText,
+    templateText,
+    logger,
+  });
+
+  const visualChecks = [];
+  const visualRepairs = [];
+  if (shouldRunVisualCheck(outputFormat, visualCheckOptions)) {
+    for (let attempt = 0; attempt <= visualCheckOptions.repairAttempts; attempt += 1) {
+      logger.info(`Running rendered visual checker with ${visualCheckModel} (attempt ${attempt + 1})`);
+      const visualReport = await runRenderedVisualCheck({
+        client,
+        model: visualCheckModel,
+        templatePath,
+        outputPath,
+        outputFormat,
+        maxPages: visualCheckOptions.maxPages,
+        logger,
+      });
+      visualChecks.push(visualReport);
+
+      if (visualReport.skipped) {
+        logger.warn(`Rendered visual checker skipped: ${visualReport.reason}`);
+        break;
       }
-    }
-  } else if (outputFormat === 'pdf') {
-    const pdfDocument = applyTemplatePdfMarkdownFormatting(finalDocument, templatePath);
-    const pdfOptions = resolvePdfConversionOptions({
-      explicitPdfEngine: options.pdfEngine,
-      markdown: pdfDocument,
-      sourceText,
-      templateText,
-    });
 
-    if (pdfOptions.warning) {
-      logger.warn(pdfOptions.warning);
-    }
+      if (visualReport.pass) {
+        logger.info(`Rendered visual checker passed: ${summarizeVisualReport(visualReport)}`);
+        break;
+      }
 
-    const fontSuffix =
-      pdfOptions.isJapaneseAware && pdfOptions.fontProfile?.serif
-        ? ` using ${pdfOptions.fontProfile.serif}`
-        : '';
-    logger.info(`Converting generated Markdown to PDF with ${pdfOptions.engine}${fontSuffix}`);
-    convertMarkdownToPdf(pdfDocument, outputPath, pdfOptions);
-  } else {
-    fs.writeFileSync(outputPath, `${finalDocument}\n`, 'utf8');
+      logger.warn(`Rendered visual checker found issues: ${summarizeVisualReport(visualReport)}`);
+      if (attempt >= visualCheckOptions.repairAttempts) {
+        break;
+      }
+
+      logger.info('Running visual-format repair agent');
+      const repairResult = await runVisualRepairLayer({
+        client,
+        model,
+        reasoning,
+        maxOutputTokens,
+        sourcePath,
+        templatePath,
+        outputFormat,
+        modelOutputFormat,
+        languageProfile,
+        sourceText,
+        templateText,
+        templatePromptText,
+        candidateDraft: finalDocument,
+        visualReport,
+      });
+      visualRepairs.push(repairResult);
+      const repairedDocument = sanitizeGeneratedDocumentStructure(repairResult.repairedDocument);
+      if (repairedDocument !== repairResult.repairedDocument) {
+        logger.info('Normalized a title/article label collision after visual repair');
+      }
+      finalDocument = repairedDocument;
+      writeRenderedOutputFromMarkdown({
+        document: finalDocument,
+        outputFormat,
+        outputPath,
+        templatePath,
+        options,
+        sourceText,
+        templateText,
+        logger,
+      });
+    }
   }
 
   const firstPassUsage = response.usage || {};
   const verificationUsage = verificationResult.usage || {};
+  const visualCheckerUsage = combineUsages(visualChecks.map((check) => check.usage));
+  const visualRepairUsage = combineUsages(visualRepairs.map((repair) => repair.usage));
+  const totalUsage = combineUsages([firstPassUsage, verificationUsage, visualCheckerUsage, visualRepairUsage]);
   const usage = {
-    input_tokens: (firstPassUsage.input_tokens || 0) + (verificationUsage.input_tokens || 0),
-    output_tokens: (firstPassUsage.output_tokens || 0) + (verificationUsage.output_tokens || 0),
-    total_tokens: (firstPassUsage.total_tokens || 0) + (verificationUsage.total_tokens || 0),
+    input_tokens: totalUsage.input_tokens,
+    output_tokens: totalUsage.output_tokens,
+    total_tokens: totalUsage.total_tokens,
     generation: firstPassUsage,
     verified_agent: verificationUsage,
   };
+  if (hasUsage(visualCheckerUsage)) {
+    usage.visual_checker = visualCheckerUsage;
+  }
+  if (hasUsage(visualRepairUsage)) {
+    usage.visual_repair = visualRepairUsage;
+  }
   logger.info(`Saved aligned draft to ${outputPath}`);
   if (usage.input_tokens || usage.output_tokens || usage.total_tokens) {
     logger.info(
@@ -861,12 +1192,16 @@ async function runAlignment(options) {
     usage,
     responseId: response.id,
     verificationResponseId: verificationResult.responseId,
+    visualCheckResponseIds: visualChecks.map((check) => check.responseId).filter(Boolean),
+    visualRepairResponseIds: visualRepairs.map((repair) => repair.responseId).filter(Boolean),
+    visualChecks,
   };
 }
 
 module.exports = {
   runAlignment,
   runVerifiedAgentLayer,
+  runVisualRepairLayer,
   applyTemplatePdfMarkdownFormatting,
   sanitizeGeneratedDocumentStructure,
   VALID_FORMATS,

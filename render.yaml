@@ -16,6 +16,12 @@ services:
         value: "12000"
       - key: PANDOC_PDF_ENGINE
         value: xelatex
+      - key: VISUAL_CHECK
+        value: auto
+      - key: VISUAL_CHECK_MAX_PAGES
+        value: "2"
+      - key: VISUAL_CHECK_REPAIR_ATTEMPTS
+        value: "1"
       - key: OUTPUT_RETENTION_HOURS
         value: "24"
       - key: UPLOAD_MAX_MB

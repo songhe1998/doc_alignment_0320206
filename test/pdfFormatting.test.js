@@ -67,6 +67,30 @@ doc.save(sys.argv[1])
   );
 }
 
+function writeCenteredSubtitlePdfFixture(filePath) {
+  childProcess.execFileSync(
+    'python3',
+    [
+      '-c',
+      String.raw`
+import fitz
+import sys
+
+doc = fitz.open()
+page = doc.new_page(width=612, height=792)
+page.insert_textbox(fitz.Rect(72, 58, 540, 92), "CONFIDENTIALITY AGREEMENT", fontsize=16, align=fitz.TEXT_ALIGN_CENTER)
+page.insert_textbox(fitz.Rect(72, 100, 540, 126), "for Project Atlas", fontsize=12, align=fitz.TEXT_ALIGN_CENTER)
+page.insert_text(fitz.Point(72, 166), "ARTICLE 1", fontsize=12)
+doc.save(sys.argv[1])
+`,
+      filePath,
+    ],
+    {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    },
+  );
+}
+
 test('buildPdfFormatOutline exposes title, heading, spacing, font, and alignment cues', { skip: !hasPyMuPdf() }, () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pdf-format-outline-'));
   const templatePath = path.join(tempDir, 'template.pdf');
@@ -140,6 +164,30 @@ test('applyTemplatePdfMarkdownFormatting centers the first title when the PDF te
 
     assert.match(formatted, /^\\begin\{center\}/);
     assert.match(formatted, /\\bfseries CONFIDENTIALITY AGREEMENT\\par/);
+    assert.match(formatted, /## ARTICLE 1/);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('applyTemplatePdfMarkdownFormatting centers a short subtitle when the template has a centered subtitle', { skip: !hasPyMuPdf() }, () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pdf-centered-subtitle-markdown-'));
+  const templatePath = path.join(tempDir, 'template.pdf');
+
+  try {
+    writeCenteredSubtitlePdfFixture(templatePath);
+
+    const markdown = [
+      '# MUTUAL NON-DISCLOSURE AND USE OF INFORMATION AGREEMENT',
+      '',
+      '**to Support Emergency Cyber Mutual Assistance**',
+      '',
+      '## ARTICLE 1',
+    ].join('\n');
+    const formatted = applyTemplatePdfMarkdownFormatting(markdown, templatePath);
+
+    assert.match(formatted, /\\bfseries MUTUAL NON-DISCLOSURE/);
+    assert.match(formatted, /\\large to Support Emergency Cyber Mutual Assistance\\par/);
     assert.match(formatted, /## ARTICLE 1/);
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });

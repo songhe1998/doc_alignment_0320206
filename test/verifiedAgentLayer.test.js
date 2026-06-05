@@ -202,3 +202,47 @@ test('sanitizeGeneratedDocumentStructure leaves real first article headings alon
 
   assert.equal(sanitizeGeneratedDocumentStructure(document), document);
 });
+
+test('sanitizeGeneratedDocumentStructure removes HTML alignment wrappers before PDF conversion', () => {
+  const document = [
+    '<div align="center">',
+    '# 秘密保持契約書',
+    '</div>',
+    '',
+    '## （目的）',
+    '',
+    '本文です。',
+  ].join('\n');
+
+  assert.equal(
+    sanitizeGeneratedDocumentStructure(document),
+    [
+      '# 秘密保持契約書',
+      '## （目的）',
+      '',
+      '本文です。',
+    ].join('\n'),
+  );
+});
+
+test('sanitizeGeneratedDocumentStructure strengthens split numbered headings', () => {
+  const document = [
+    '# Agreement',
+    '',
+    '1.',
+    'Purpose, Scope, and Definitions.',
+    '',
+    'The purpose of this Agreement is to permit the parties to exchange Confidential Information.',
+  ].join('\n');
+
+  assert.equal(
+    sanitizeGeneratedDocumentStructure(document),
+    [
+      '# Agreement',
+      '',
+      '**1. Purpose, Scope, and Definitions.**',
+      '',
+      'The purpose of this Agreement is to permit the parties to exchange Confidential Information.',
+    ].join('\n'),
+  );
+});
