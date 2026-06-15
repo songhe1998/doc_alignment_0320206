@@ -714,6 +714,21 @@ function applyPlainTextTemplateMarkdownFormatting(markdown, templatePath) {
       continue;
     }
 
+    if (
+      style.plainHeadings &&
+      style.splitArticleHeadings &&
+      !isFirstNonEmpty &&
+      !parts &&
+      isShortPlainHeadingLine(stripped) &&
+      isArticleOrSectionLine(stripped)
+    ) {
+      const headingLines = splitArticleHeadingText(stripped);
+      if (headingLines.length > 1) {
+        formatted.push(...headingLines);
+        continue;
+      }
+    }
+
     formatted.push(line);
   }
 

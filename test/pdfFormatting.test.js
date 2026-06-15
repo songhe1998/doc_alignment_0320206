@@ -286,6 +286,8 @@ test('plain Markdown PDF templates keep generated titles and headings plain', ()
       '## ARTICLE II',
       '',
       '## TERM AND TERMINATION',
+      '',
+      'ARTICLE III MISCELLANEOUS',
     ].join('\n');
     const formatted = applyTemplatePdfMarkdownFormatting(markdown, templatePath);
 
@@ -294,6 +296,7 @@ test('plain Markdown PDF templates keep generated titles and headings plain', ()
     assert.match(formatted, /^CONFIDENTIALITY AGREEMENT$/m);
     assert.match(formatted, /ARTICLE I\nDEFINITIONS/);
     assert.match(formatted, /ARTICLE II\nTERM AND TERMINATION/);
+    assert.match(formatted, /ARTICLE III\nMISCELLANEOUS/);
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
