@@ -4,6 +4,7 @@ const childProcess = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { pathToFileURL } = require('url');
 
 const { buildDocxFormatOutline } = require('./docxFormatting');
 
@@ -103,23 +104,15 @@ function commandExists(command) {
   }
 }
 
-let cachedFontCatalog = null;
-
 function listFontCatalog() {
-  if (cachedFontCatalog !== null) {
-    return cachedFontCatalog;
-  }
-
   try {
-    cachedFontCatalog = childProcess.execFileSync('fc-list', [':', 'family'], {
+    return childProcess.execFileSync('fc-list', [':', 'family'], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
     });
   } catch (error) {
-    cachedFontCatalog = null;
+    return null;
   }
-
-  return cachedFontCatalog;
 }
 
 function resolveInstalledFont(candidates, fontCatalog = listFontCatalog()) {
@@ -210,14 +203,26 @@ function resolvePreviewPdfEngine() {
   return 'pdflatex';
 }
 
+function resolveOfficeCommand() {
+  if (commandExists('soffice')) {
+    return 'soffice';
+  }
+  if (commandExists('libreoffice')) {
+    return 'libreoffice';
+  }
+
+  return null;
+}
+
 function addFontArgs(args, engine) {
   if (engine !== 'xelatex' && engine !== 'lualatex') {
     return args;
   }
 
-  const serif = resolveInstalledFont(CJK_FONT_CANDIDATES.serif);
-  const sans = resolveInstalledFont(CJK_FONT_CANDIDATES.sans);
-  const mono = resolveInstalledFont(CJK_FONT_CANDIDATES.mono);
+  const fontCatalog = listFontCatalog();
+  const serif = resolveInstalledFont(CJK_FONT_CANDIDATES.serif, fontCatalog);
+  const sans = resolveInstalledFont(CJK_FONT_CANDIDATES.sans, fontCatalog);
+  const mono = resolveInstalledFont(CJK_FONT_CANDIDATES.mono, fontCatalog);
 
   if (serif) {
     args.push(`-Vmainfont=${serif}`);
@@ -249,6 +254,10 @@ function convertDocumentToPreviewPdf(filePath, tempDir, label) {
     return filePath;
   }
 
+  if (extension === '.docx') {
+    return convertDocxToPreviewPdf(filePath, tempDir, label);
+  }
+
   const previewPdfPath = path.join(tempDir, `${label}.pdf`);
   const engine = resolvePreviewPdfEngine();
   const args = [filePath, '-o', previewPdfPath, `--pdf-engine=${engine}`, '-Vgeometry=margin=1in'];
@@ -259,6 +268,56 @@ function convertDocumentToPreviewPdf(filePath, tempDir, label) {
     throw new Error(`Pandoc preview conversion failed for ${path.basename(filePath)}:\n${formatCommandFailure(error)}`);
   }
   return previewPdfPath;
+}
+
+function convertDocxToPreviewPdf(filePath, tempDir, label) {
+  const officeCommand = resolveOfficeCommand();
+  if (!officeCommand) {
+    throw new Error('DOCX visual preview requires LibreOffice/soffice on PATH.');
+  }
+
+  const outputDir = path.join(tempDir, `${label}-office`);
+  const profileDir = path.join(tempDir, `${label}-office-profile`);
+  fs.mkdirSync(outputDir, { recursive: true });
+  fs.mkdirSync(profileDir, { recursive: true });
+
+  const args = [
+    '--headless',
+    '--nologo',
+    '--nofirststartwizard',
+    '--norestore',
+    `-env:UserInstallation=${pathToFileURL(profileDir).href}`,
+    '--convert-to',
+    'pdf',
+    '--outdir',
+    outputDir,
+    filePath,
+  ];
+
+  try {
+    childProcess.execFileSync(officeCommand, args, {
+      encoding: 'utf8',
+      maxBuffer: 10 * 1024 * 1024,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 120000,
+    });
+  } catch (error) {
+    throw new Error(`LibreOffice DOCX preview conversion failed for ${path.basename(filePath)}:\n${formatCommandFailure(error)}`);
+  }
+
+  const expectedPdfPath = path.join(outputDir, `${path.basename(filePath, path.extname(filePath))}.pdf`);
+  if (fs.existsSync(expectedPdfPath)) {
+    return expectedPdfPath;
+  }
+
+  const convertedPdfPath = fs
+    .readdirSync(outputDir)
+    .find((entry) => path.extname(entry).toLowerCase() === '.pdf');
+  if (convertedPdfPath) {
+    return path.join(outputDir, convertedPdfPath);
+  }
+
+  throw new Error(`LibreOffice DOCX preview conversion did not produce a PDF for ${path.basename(filePath)}.`);
 }
 
 function renderPdfToImages(pdfPath, outputDir, label, maxPages) {

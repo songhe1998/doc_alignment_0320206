@@ -150,7 +150,7 @@ Default Render environment values are defined in `render.yaml`:
 
 Notes for hosted use:
 
-- The Docker image installs `pandoc`, `xelatex`, `lmodern`, Japanese fonts, and PyMuPDF so `docx`, `pdf`, and Japanese/CJK PDF output work in Render.
+- The Docker image installs `pandoc`, `xelatex`, `lmodern`, Japanese fonts, LibreOffice Writer, and PyMuPDF so `docx`, `pdf`, Japanese/CJK PDF output, and rendered DOCX visual checks work in Render.
 - Browser-triggered files are stored under `./output/ui/<request-id>/` and old runs are cleaned up automatically based on `OUTPUT_RETENTION_HOURS`.
 - Render instances use ephemeral local storage by default, so generated files are meant for immediate download, not long-term retention.
 

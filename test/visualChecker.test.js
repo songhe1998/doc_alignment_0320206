@@ -142,7 +142,48 @@ test('resolveInstalledFont does not invent a font when fontconfig has no match',
   assert.equal(resolveInstalledFont(['Menlo'], null), 'Menlo');
 });
 
-test('renderDocumentPreviewImages omits missing monofont from Pandoc preview args', () => {
+test('renderDocumentPreviewImages uses LibreOffice instead of Pandoc for DOCX preview', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'visual-render-docx-unit-'));
+  const sourcePath = path.join(tempDir, 'aligned.docx');
+  fs.writeFileSync(sourcePath, 'dummy docx bytes');
+  const originalExecFileSync = childProcess.execFileSync;
+  const calls = [];
+
+  childProcess.execFileSync = (command, args = [], options = {}) => {
+    calls.push({ command, args });
+
+    if (command === 'sh' && args[1] === 'command -v soffice') {
+      return Buffer.from('/usr/bin/soffice\n');
+    }
+    if (command === 'soffice') {
+      const outputDir = args[args.indexOf('--outdir') + 1];
+      fs.mkdirSync(outputDir, { recursive: true });
+      fs.writeFileSync(path.join(outputDir, 'aligned.pdf'), '%PDF-1.4\n');
+      return 'convert aligned.docx -> aligned.pdf';
+    }
+    if (command === 'python3') {
+      return '[]';
+    }
+
+    return originalExecFileSync(command, args, options);
+  };
+
+  try {
+    renderDocumentPreviewImages(sourcePath, { tempDir, label: 'output', maxPages: 1 });
+  } finally {
+    childProcess.execFileSync = originalExecFileSync;
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+
+  const officeCall = calls.find((call) => call.command === 'soffice');
+  assert.ok(officeCall);
+  assert.ok(officeCall.args.includes('--headless'));
+  assert.ok(officeCall.args.includes('--convert-to'));
+  assert.ok(officeCall.args.includes('pdf'));
+  assert.equal(calls.some((call) => call.command === 'pandoc'), false);
+});
+
+test('renderDocumentPreviewImages omits missing monofont from Markdown Pandoc preview args', () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'visual-render-font-unit-'));
   const sourcePath = writeFixture(tempDir, 'aligned.md', '# 秘密保持契約書\n\n本文です。');
   const originalExecFileSync = childProcess.execFileSync;

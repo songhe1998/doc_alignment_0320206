@@ -14,7 +14,9 @@ RUN apt-get update && \
       fontconfig \
       fonts-ipafont-gothic \
       fonts-ipafont-mincho \
+      fonts-liberation \
       fonts-noto-cjk \
+      libreoffice-writer \
       lmodern \
       pandoc \
       python3 \
