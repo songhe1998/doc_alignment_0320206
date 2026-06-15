@@ -10,6 +10,7 @@ const { buildDocxFormatOutline } = require('./docxFormatting');
 
 const VISUAL_OUTPUT_FORMATS = new Set(['docx', 'pdf']);
 const RENDERABLE_EXTENSIONS = new Set(['.pdf', '.docx', '.md', '.markdown', '.txt', '.text']);
+const CJK_REGEX = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/;
 const CJK_FONT_CANDIDATES = {
   serif: [
     'Hiragino Mincho ProN',
@@ -214,8 +215,8 @@ function resolveOfficeCommand() {
   return null;
 }
 
-function addFontArgs(args, engine) {
-  if (engine !== 'xelatex' && engine !== 'lualatex') {
+function addFontArgs(args, engine, { enableCjkFonts = false } = {}) {
+  if (!enableCjkFonts || (engine !== 'xelatex' && engine !== 'lualatex')) {
     return args;
   }
 
@@ -226,7 +227,6 @@ function addFontArgs(args, engine) {
 
   if (serif) {
     args.push(`-Vmainfont=${serif}`);
-    args.push(`-VCJKmainfont=${serif}`);
     args.push('-Vlang=ja-JP');
   }
   if (sans) {
@@ -237,6 +237,14 @@ function addFontArgs(args, engine) {
   }
 
   return args;
+}
+
+function fileContainsCjk(filePath) {
+  try {
+    return CJK_REGEX.test(fs.readFileSync(filePath, 'utf8'));
+  } catch (error) {
+    return false;
+  }
 }
 
 function ensureRenderable(filePath) {
@@ -261,7 +269,7 @@ function convertDocumentToPreviewPdf(filePath, tempDir, label) {
   const previewPdfPath = path.join(tempDir, `${label}.pdf`);
   const engine = resolvePreviewPdfEngine();
   const args = [filePath, '-o', previewPdfPath, `--pdf-engine=${engine}`, '-Vgeometry=margin=1in'];
-  addFontArgs(args, engine);
+  addFontArgs(args, engine, { enableCjkFonts: fileContainsCjk(filePath) });
   try {
     childProcess.execFileSync('pandoc', args, { stdio: 'pipe' });
   } catch (error) {

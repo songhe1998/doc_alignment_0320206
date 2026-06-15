@@ -664,7 +664,6 @@ function convertMarkdownToPdf(markdown, outputPath, pdfOptions) {
 
     if (pdfOptions.isJapaneseAware && pdfOptions.fontProfile?.serif) {
       pandocArgs.push(`-Vmainfont=${pdfOptions.fontProfile.serif}`);
-      pandocArgs.push(`-VCJKmainfont=${pdfOptions.fontProfile.serif}`);
       pandocArgs.push('-Vlang=ja-JP');
     }
     if (pdfOptions.isJapaneseAware && pdfOptions.fontProfile?.sans) {

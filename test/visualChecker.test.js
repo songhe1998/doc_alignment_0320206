@@ -218,8 +218,46 @@ test('renderDocumentPreviewImages omits missing monofont from Markdown Pandoc pr
   const pandocCall = calls.find((call) => call.command === 'pandoc');
   assert.ok(pandocCall);
   assert.ok(pandocCall.args.includes('-Vmainfont=Noto Serif CJK JP'));
+  assert.ok(!pandocCall.args.some((arg) => arg.startsWith('-VCJKmainfont=')));
   assert.ok(pandocCall.args.includes('-Vsansfont=Noto Sans CJK JP'));
   assert.ok(!pandocCall.args.some((arg) => arg === '-Vmonofont=Menlo'));
+  assert.ok(!pandocCall.args.some((arg) => arg.startsWith('-Vmonofont=')));
+});
+
+test('renderDocumentPreviewImages does not add CJK font args for English Markdown previews', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'visual-render-english-unit-'));
+  const sourcePath = writeFixture(tempDir, 'template.md', '# MASTER SERVICES AGREEMENT\n\nARTICLE I\n\nServices.');
+  const originalExecFileSync = childProcess.execFileSync;
+  const calls = [];
+
+  childProcess.execFileSync = (command, args = [], options = {}) => {
+    calls.push({ command, args });
+
+    if (command === 'sh' && args[1] === 'command -v xelatex') {
+      return Buffer.from('/usr/bin/xelatex\n');
+    }
+    if (command === 'pandoc') {
+      return Buffer.from('');
+    }
+    if (command === 'python3') {
+      return '[]';
+    }
+
+    return originalExecFileSync(command, args, options);
+  };
+
+  try {
+    renderDocumentPreviewImages(sourcePath, { tempDir, label: 'template', maxPages: 1 });
+  } finally {
+    childProcess.execFileSync = originalExecFileSync;
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+
+  const pandocCall = calls.find((call) => call.command === 'pandoc');
+  assert.ok(pandocCall);
+  assert.ok(!pandocCall.args.some((arg) => arg.startsWith('-Vmainfont=')));
+  assert.ok(!pandocCall.args.some((arg) => arg.startsWith('-VCJKmainfont=')));
+  assert.ok(!pandocCall.args.some((arg) => arg.startsWith('-Vsansfont=')));
   assert.ok(!pandocCall.args.some((arg) => arg.startsWith('-Vmonofont=')));
 });
 
