@@ -56,7 +56,15 @@ const JAPANESE_PDF_FONT_CANDIDATES = {
     'BIZ UDPGothic',
     'Arial Unicode MS',
   ],
-  mono: ['Menlo', 'Courier New', 'Osaka-Mono'],
+  mono: [
+    'Noto Sans Mono CJK JP',
+    'Noto Sans Mono',
+    'DejaVu Sans Mono',
+    'Liberation Mono',
+    'Menlo',
+    'Courier New',
+    'Osaka-Mono',
+  ],
 };
 const OUTPUT_FORMAT_TO_EXTENSION = {
   markdown: '.md',
@@ -206,23 +214,27 @@ function listFontCatalog() {
       stdio: ['ignore', 'pipe', 'ignore'],
     });
 
-    cachedFontCatalog = output.toLowerCase();
+    cachedFontCatalog = output;
     return cachedFontCatalog;
   } catch (error) {
-    cachedFontCatalog = '';
+    cachedFontCatalog = null;
     return cachedFontCatalog;
   }
 }
 
-function resolveInstalledFont(candidates) {
-  const catalog = listFontCatalog();
+function resolveInstalledFont(candidates, fontCatalog = listFontCatalog()) {
+  if (fontCatalog === null) {
+    return candidates[0] || null;
+  }
+
+  const catalog = String(fontCatalog || '').toLowerCase();
   for (const candidate of candidates) {
-    if (!catalog || catalog.includes(candidate.toLowerCase())) {
+    if (catalog.includes(candidate.toLowerCase())) {
       return candidate;
     }
   }
 
-  return candidates[0] || null;
+  return null;
 }
 
 function resolveJapanesePdfProfile() {

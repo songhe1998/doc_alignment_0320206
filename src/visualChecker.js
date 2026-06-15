@@ -30,7 +30,15 @@ const CJK_FONT_CANDIDATES = {
     'BIZ UDPGothic',
     'Arial Unicode MS',
   ],
-  mono: ['Menlo', 'Courier New', 'Osaka-Mono'],
+  mono: [
+    'Noto Sans Mono CJK JP',
+    'Noto Sans Mono',
+    'DejaVu Sans Mono',
+    'Liberation Mono',
+    'Menlo',
+    'Courier New',
+    'Osaka-Mono',
+  ],
 };
 
 const VISUAL_CHECK_SCHEMA = {
@@ -106,23 +114,42 @@ function listFontCatalog() {
     cachedFontCatalog = childProcess.execFileSync('fc-list', [':', 'family'], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
-    }).toLowerCase();
+    });
   } catch (error) {
-    cachedFontCatalog = '';
+    cachedFontCatalog = null;
   }
 
   return cachedFontCatalog;
 }
 
-function resolveInstalledFont(candidates) {
-  const catalog = listFontCatalog();
+function resolveInstalledFont(candidates, fontCatalog = listFontCatalog()) {
+  if (fontCatalog === null) {
+    return candidates[0] || null;
+  }
+
+  const catalog = String(fontCatalog || '').toLowerCase();
   for (const candidate of candidates) {
-    if (!catalog || catalog.includes(candidate.toLowerCase())) {
+    if (catalog.includes(candidate.toLowerCase())) {
       return candidate;
     }
   }
 
-  return candidates[0] || null;
+  return null;
+}
+
+function formatCommandFailure(error) {
+  const details = [error.message];
+  const stderr = error.stderr ? Buffer.from(error.stderr).toString('utf8').trim() : '';
+  const stdout = error.stdout ? Buffer.from(error.stdout).toString('utf8').trim() : '';
+
+  if (stderr) {
+    details.push(`stderr:\n${stderr}`);
+  }
+  if (stdout) {
+    details.push(`stdout:\n${stdout}`);
+  }
+
+  return details.join('\n');
 }
 
 function normalizeBooleanMode(value, defaultValue = 'auto') {
@@ -226,7 +253,11 @@ function convertDocumentToPreviewPdf(filePath, tempDir, label) {
   const engine = resolvePreviewPdfEngine();
   const args = [filePath, '-o', previewPdfPath, `--pdf-engine=${engine}`, '-Vgeometry=margin=1in'];
   addFontArgs(args, engine);
-  childProcess.execFileSync('pandoc', args, { stdio: 'pipe' });
+  try {
+    childProcess.execFileSync('pandoc', args, { stdio: 'pipe' });
+  } catch (error) {
+    throw new Error(`Pandoc preview conversion failed for ${path.basename(filePath)}:\n${formatCommandFailure(error)}`);
+  }
   return previewPdfPath;
 }
 
@@ -497,6 +528,7 @@ module.exports = {
   normalizeVisualCheckReport,
   parseVisualCheckJson,
   renderDocumentPreviewImages,
+  resolveInstalledFont,
   resolveVisualCheckOptions,
   runRenderedVisualCheck,
   runVisualCheck,

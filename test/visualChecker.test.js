@@ -12,6 +12,8 @@ const {
   buildVisualCheckUserContent,
   normalizeVisualCheckReport,
   parseVisualCheckJson,
+  renderDocumentPreviewImages,
+  resolveInstalledFont,
   runVisualCheck,
 } = require('../src/visualChecker');
 
@@ -124,6 +126,87 @@ test('buildVisualCheckUserContent can use a template visual outline instead of t
     assert.equal(content.filter((part) => part.type === 'input_image').length, 1);
     assert.doesNotMatch(JSON.stringify(content), /TARGET TEMPLATE PAGE/);
   } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('resolveInstalledFont does not invent a font when fontconfig has no match', () => {
+  const renderLikeCatalog = [
+    'Noto Serif CJK JP',
+    'Noto Sans CJK JP',
+    'DejaVu Sans Mono',
+  ].join('\n');
+
+  assert.equal(resolveInstalledFont(['Menlo', 'DejaVu Sans Mono'], renderLikeCatalog), 'DejaVu Sans Mono');
+  assert.equal(resolveInstalledFont(['Menlo', 'Courier New', 'Osaka-Mono'], renderLikeCatalog), null);
+  assert.equal(resolveInstalledFont(['Menlo'], null), 'Menlo');
+});
+
+test('renderDocumentPreviewImages omits missing monofont from Pandoc preview args', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'visual-render-font-unit-'));
+  const sourcePath = writeFixture(tempDir, 'aligned.md', '# 秘密保持契約書\n\n本文です。');
+  const originalExecFileSync = childProcess.execFileSync;
+  const calls = [];
+
+  childProcess.execFileSync = (command, args = [], options = {}) => {
+    calls.push({ command, args });
+
+    if (command === 'sh' && args[1] === 'command -v xelatex') {
+      return Buffer.from('/usr/bin/xelatex\n');
+    }
+    if (command === 'fc-list') {
+      return 'Noto Serif CJK JP\nNoto Sans CJK JP\n';
+    }
+    if (command === 'pandoc') {
+      return Buffer.from('');
+    }
+    if (command === 'python3') {
+      return '[]';
+    }
+
+    return originalExecFileSync(command, args, options);
+  };
+
+  try {
+    renderDocumentPreviewImages(sourcePath, { tempDir, label: 'output', maxPages: 1 });
+  } finally {
+    childProcess.execFileSync = originalExecFileSync;
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+
+  const pandocCall = calls.find((call) => call.command === 'pandoc');
+  assert.ok(pandocCall);
+  assert.ok(pandocCall.args.includes('-Vmainfont=Noto Serif CJK JP'));
+  assert.ok(pandocCall.args.includes('-Vsansfont=Noto Sans CJK JP'));
+  assert.ok(!pandocCall.args.some((arg) => arg === '-Vmonofont=Menlo'));
+  assert.ok(!pandocCall.args.some((arg) => arg.startsWith('-Vmonofont=')));
+});
+
+test('renderDocumentPreviewImages includes Pandoc stderr when preview conversion fails', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'visual-render-error-unit-'));
+  const sourcePath = writeFixture(tempDir, 'aligned.md', '# 秘密保持契約書\n\n本文です。');
+  const originalExecFileSync = childProcess.execFileSync;
+
+  childProcess.execFileSync = (command, args = [], options = {}) => {
+    if (command === 'sh' && args[1] === 'command -v xelatex') {
+      return Buffer.from('/usr/bin/xelatex\n');
+    }
+    if (command === 'pandoc') {
+      const error = new Error('Command failed: pandoc');
+      error.stderr = Buffer.from('Package fontspec Error: The font "Menlo" cannot be found.');
+      throw error;
+    }
+
+    return originalExecFileSync(command, args, options);
+  };
+
+  try {
+    assert.throws(
+      () => renderDocumentPreviewImages(sourcePath, { tempDir, label: 'output', maxPages: 1 }),
+      /font "Menlo" cannot be found/,
+    );
+  } finally {
+    childProcess.execFileSync = originalExecFileSync;
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
 });
