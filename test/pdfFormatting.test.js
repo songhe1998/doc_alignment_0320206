@@ -253,3 +253,69 @@ test('PDF template layout narrows margins and tones down modest headings', { ski
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
 });
+
+test('plain Markdown PDF templates keep generated titles and headings plain', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pdf-plain-markdown-template-'));
+  const templatePath = path.join(tempDir, 'template.md');
+
+  try {
+    fs.writeFileSync(
+      templatePath,
+      [
+        'MASTER SERVICES AGREEMENT',
+        '',
+        'This MASTER SERVICES AGREEMENT is made by the parties.',
+        '',
+        'ARTICLE I',
+        'DEFINITIONS',
+        '',
+        '1.1 "Services" means professional services.',
+      ].join('\n'),
+      'utf8',
+    );
+
+    const markdown = [
+      '# CONFIDENTIALITY AGREEMENT',
+      '',
+      'Introductory paragraph.',
+      '',
+      '## ARTICLE I DEFINITIONS',
+      '',
+      '1.1 "Confidential Information" means non-public information.',
+      '',
+      '## ARTICLE II',
+      '',
+      '## TERM AND TERMINATION',
+    ].join('\n');
+    const formatted = applyTemplatePdfMarkdownFormatting(markdown, templatePath);
+
+    assert.doesNotMatch(formatted, /^# /m);
+    assert.doesNotMatch(formatted, /^## /m);
+    assert.match(formatted, /^CONFIDENTIALITY AGREEMENT$/m);
+    assert.match(formatted, /ARTICLE I\nDEFINITIONS/);
+    assert.match(formatted, /ARTICLE II\nTERM AND TERMINATION/);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('Markdown PDF templates with heading markup keep generated heading markup', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pdf-markdown-heading-template-'));
+  const templatePath = path.join(tempDir, 'template.md');
+
+  try {
+    fs.writeFileSync(
+      templatePath,
+      ['# MASTER SERVICES AGREEMENT', '', '## ARTICLE I', '', '## DEFINITIONS'].join('\n'),
+      'utf8',
+    );
+
+    const markdown = ['# CONFIDENTIALITY AGREEMENT', '', '## ARTICLE I DEFINITIONS'].join('\n');
+    const formatted = applyTemplatePdfMarkdownFormatting(markdown, templatePath);
+
+    assert.match(formatted, /^# CONFIDENTIALITY AGREEMENT$/m);
+    assert.match(formatted, /^## ARTICLE I DEFINITIONS$/m);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});

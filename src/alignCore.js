@@ -72,6 +72,7 @@ const OUTPUT_FORMAT_TO_EXTENSION = {
   docx: '.docx',
   pdf: '.pdf',
 };
+const TEXT_TEMPLATE_EXTENSIONS = new Set(['.md', '.markdown', '.txt', '.text']);
 const ARTICLE_TITLE_PREFIX_REGEX =
   /^(第[0-9０-９一二三四五六七八九十百]+[条章節]|ARTICLE\s+[0-9IVXLCDM]+|Section\s+[0-9.]+)\s*[：:．.\-–—　\s]+(.+)$/i;
 const LEGAL_TITLE_REMAINDER_REGEX =
@@ -555,6 +556,170 @@ function headingLineParts(line) {
   };
 }
 
+function isMarkdownHeadingLine(line) {
+  return Boolean(headingLineParts(line));
+}
+
+function isPlainLegalTitleLine(line) {
+  const text = stripInlineMarkdown(line);
+  if (!text || text.length > 140 || isArticleOrSectionLine(text)) {
+    return false;
+  }
+
+  if (/[.;。！？!?]$/.test(text)) {
+    return false;
+  }
+
+  const letterText = text.replace(/[^A-Za-z]/g, '');
+  const isUppercaseTitle = letterText.length >= 8 && letterText === letterText.toUpperCase();
+  return LEGAL_TITLE_REMAINDER_REGEX.test(text) || isUppercaseTitle;
+}
+
+function isShortPlainHeadingLine(line) {
+  const text = stripInlineMarkdown(line);
+  if (!text || text.length > 100 || isMarkdownHeadingLine(line)) {
+    return false;
+  }
+
+  if (/[.;。！？!?]$/.test(text)) {
+    return false;
+  }
+
+  return isArticleOrSectionLine(text) || isShortHeadingText(text);
+}
+
+function analyzePlainTextTemplateStyle(templatePath) {
+  if (!TEXT_TEMPLATE_EXTENSIONS.has(path.extname(templatePath).toLowerCase())) {
+    return null;
+  }
+
+  let text = '';
+  try {
+    text = fs.readFileSync(templatePath, 'utf8');
+  } catch (error) {
+    return null;
+  }
+
+  const lines = text.split(/\r?\n/);
+  const firstNonEmptyIndex = lines.findIndex((line) => line.trim());
+  if (firstNonEmptyIndex === -1) {
+    return null;
+  }
+
+  const firstLine = lines[firstNonEmptyIndex];
+  const plainTitle = !isMarkdownHeadingLine(firstLine) && isPlainLegalTitleLine(firstLine);
+  let plainHeadings = false;
+  let splitArticleHeadings = false;
+
+  for (let index = firstNonEmptyIndex + 1; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (!line.trim() || isMarkdownHeadingLine(line)) {
+      continue;
+    }
+
+    const textLine = stripInlineMarkdown(line);
+    if (!isShortPlainHeadingLine(textLine)) {
+      continue;
+    }
+
+    plainHeadings = true;
+    if (isStandaloneArticleLabel(textLine)) {
+      let nextIndex = index + 1;
+      while (nextIndex < lines.length && !lines[nextIndex].trim()) {
+        nextIndex += 1;
+      }
+
+      if (
+        nextIndex < lines.length &&
+        !isMarkdownHeadingLine(lines[nextIndex]) &&
+        isShortPlainHeadingLine(lines[nextIndex]) &&
+        !isArticleOrSectionLine(lines[nextIndex])
+      ) {
+        splitArticleHeadings = true;
+      }
+    }
+  }
+
+  if (!plainTitle && !plainHeadings) {
+    return null;
+  }
+
+  return { plainTitle, plainHeadings, splitArticleHeadings };
+}
+
+function splitArticleHeadingText(text) {
+  const stripped = stripInlineMarkdown(text);
+  const match = stripped.match(ARTICLE_TITLE_PREFIX_REGEX);
+  if (!match) {
+    return [stripped];
+  }
+
+  return [match[1].trim(), match[2].trim()].filter(Boolean);
+}
+
+function applyPlainTextTemplateMarkdownFormatting(markdown, templatePath) {
+  const style = analyzePlainTextTemplateStyle(templatePath);
+  if (!style) {
+    return markdown;
+  }
+
+  const lines = String(markdown || '').split('\n');
+  const formatted = [];
+  let firstNonEmptySeen = false;
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const parts = headingLineParts(line);
+    const stripped = stripInlineMarkdown(parts ? parts.text : line);
+    const isFirstNonEmpty = !firstNonEmptySeen && Boolean(line.trim());
+
+    if (isFirstNonEmpty) {
+      firstNonEmptySeen = true;
+      if (style.plainTitle && (parts || isPlainLegalTitleLine(stripped))) {
+        formatted.push(stripped);
+        continue;
+      }
+    }
+
+    if (style.plainHeadings && parts) {
+      if (style.splitArticleHeadings && isStandaloneArticleLabel(stripped)) {
+        let nextIndex = index + 1;
+        while (nextIndex < lines.length && !lines[nextIndex].trim()) {
+          nextIndex += 1;
+        }
+
+        const nextParts = nextIndex < lines.length ? headingLineParts(lines[nextIndex]) : null;
+        const nextText = nextParts ? stripInlineMarkdown(nextParts.text) : '';
+        if (nextParts && isShortPlainHeadingLine(nextText) && !isArticleOrSectionLine(nextText)) {
+          formatted.push(stripped, nextText);
+          index = nextIndex;
+          continue;
+        }
+      }
+
+      const headingLines =
+        style.splitArticleHeadings && isArticleOrSectionLine(stripped)
+          ? splitArticleHeadingText(stripped)
+          : [stripped];
+      formatted.push(...headingLines);
+      continue;
+    }
+
+    if (style.plainHeadings && /^\s{0,3}(\*\*|__)([\s\S]+)\1\s*$/.test(line) && isShortPlainHeadingLine(stripped)) {
+      const headingLines =
+        style.splitArticleHeadings && isArticleOrSectionLine(stripped)
+          ? splitArticleHeadingText(stripped)
+          : [stripped];
+      formatted.push(...headingLines);
+      continue;
+    }
+
+    formatted.push(line);
+  }
+
+  return formatted.join('\n');
+}
+
 function normalizeSplitArticleHeadingsForPdf(markdown) {
   const lines = String(markdown || '').split('\n');
   const normalized = [];
@@ -760,7 +925,8 @@ function resolvePdfTemplateLayout(templatePath) {
 
 function applyTemplatePdfMarkdownFormatting(markdown, templatePath) {
   const layout = resolvePdfTemplateLayout(templatePath);
-  const mergedMarkdown = normalizeSplitArticleHeadingsForPdf(markdown);
+  const textTemplateMarkdown = applyPlainTextTemplateMarkdownFormatting(markdown, templatePath);
+  const mergedMarkdown = normalizeSplitArticleHeadingsForPdf(textTemplateMarkdown);
   const styledMarkdown = applyModestPdfHeadingStyle(mergedMarkdown, layout);
   const openingProfiles = getTemplateOpeningProfiles(templatePath);
   return centerOpeningLinesForPdf(styledMarkdown, openingProfiles);
