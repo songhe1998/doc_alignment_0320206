@@ -178,6 +178,7 @@ function parseStyles(stylesXml) {
       spacingAfter: readSpacingValue(pPr['w:spacing'] || pPr.spacing, 'w:after'),
       bold: isBooleanOn(getChild(rPr, 'w:b', 'b')),
       sizeHalfPoints: readHalfPointSize(rPr['w:sz'] || rPr.sz),
+      hasNumbering: pPr['w:numPr'] || pPr.numPr ? true : undefined,
     });
   }
 
@@ -241,6 +242,7 @@ function profileParagraph(paragraph, styles, previousWasBlank, index) {
     bold: Boolean(directBold || pBold || style.bold),
     sizeHalfPoints: hasSize ? sizeHalfPoints : null,
     fontSizePt: hasSize ? sizeHalfPoints / 2 : null,
+    hasNumbering: Boolean(pPr['w:numPr'] || pPr.numPr || style.hasNumbering),
   };
 }
 
@@ -362,7 +364,7 @@ function updateParagraphProperty(paragraphXml, tagName, elementXml) {
   const ensured = ensureParagraphProperties(paragraphXml);
   return ensured.replace(/<w:pPr\b([^>]*)>([\s\S]*?)<\/w:pPr>|<w:pPr\b([^>]*)\/>/, (match, attrs = '', contents = '', selfClosingAttrs = '') => {
     const existingContents = contents || '';
-    const cleanContents = existingContents.replace(new RegExp(`<${tagName}\\b[\\s\\S]*?\\/>|<${tagName}\\b[\\s\\S]*?</${tagName}>`), '');
+    const cleanContents = existingContents.replace(new RegExp(`<${tagName}\\b[\\s\\S]*?</${tagName}>|<${tagName}\\b[\\s\\S]*?\\/>`), '');
     const finalAttrs = attrs || selfClosingAttrs || '';
     return `<w:pPr${finalAttrs}>${elementXml}${cleanContents}</w:pPr>`;
   });
@@ -375,7 +377,7 @@ function removeParagraphProperty(paragraphXml, tagName) {
 
   return paragraphXml.replace(/<w:pPr\b([^>]*)>([\s\S]*?)<\/w:pPr>|<w:pPr\b([^>]*)\/>/, (match, attrs = '', contents = '', selfClosingAttrs = '') => {
     const existingContents = contents || '';
-    const cleanContents = existingContents.replace(new RegExp(`<${tagName}\\b[\\s\\S]*?\\/>|<${tagName}\\b[\\s\\S]*?</${tagName}>`), '');
+    const cleanContents = existingContents.replace(new RegExp(`<${tagName}\\b[\\s\\S]*?</${tagName}>|<${tagName}\\b[\\s\\S]*?\\/>`), '');
     const finalAttrs = attrs || selfClosingAttrs || '';
     return `<w:pPr${finalAttrs}>${cleanContents}</w:pPr>`;
   });
@@ -442,8 +444,11 @@ function applyTextRunProperties(paragraphXml, profile) {
 function applyParagraphProfile(paragraphXml, profile) {
   let patched = paragraphXml;
 
-  if (profile.styleId) {
+  if (profile.styleId && !profile.hasNumbering) {
     patched = updateParagraphProperty(patched, 'w:pStyle', `<w:pStyle w:val="${xmlEscape(profile.styleId)}"/>`);
+  } else {
+    patched = removeParagraphProperty(patched, 'w:pStyle');
+    patched = removeParagraphProperty(patched, 'w:numPr');
   }
 
   if (profile.alignment) {

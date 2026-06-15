@@ -100,3 +100,48 @@ test('applyTemplateDocxFormatting copies title and heading visual cues into gene
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
 });
+
+test('applyTemplateDocxFormatting does not copy numbered heading styles into generated docx', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docx-format-numbered-heading-'));
+  const templatePath = path.join(tempDir, 'template.docx');
+  const outputPath = path.join(tempDir, 'output.docx');
+
+  try {
+    writeDocx(
+      templatePath,
+      makeDocumentXml([
+        '<w:p><w:pPr><w:jc w:val="center"/><w:rPr><w:b/><w:sz w:val="32"/></w:rPr></w:pPr><w:r><w:rPr><w:b/><w:sz w:val="32"/></w:rPr><w:t>秘密保持契約書</w:t></w:r></w:p>',
+        '<w:p/>',
+        '<w:p><w:pPr><w:pStyle w:val="NumberedHeading"/></w:pPr><w:r><w:t>（秘密情報の定義・開示等の方法）</w:t></w:r></w:p>',
+      ]),
+      [
+        `<?xml version="1.0" encoding="UTF-8"?><w:styles xmlns:w="${WORD_NS}">`,
+        '<w:style w:type="paragraph" w:styleId="NumberedHeading">',
+        '<w:name w:val="Numbered Heading"/>',
+        '<w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr><w:spacing w:before="240" w:after="120"/></w:pPr>',
+        '<w:rPr><w:b/><w:sz w:val="24"/></w:rPr>',
+        '</w:style>',
+        '</w:styles>',
+      ].join(''),
+    );
+    writeDocx(
+      outputPath,
+      makeDocumentXml([
+        '<w:p><w:pPr><w:pStyle w:val="NumberedHeading"/><w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:t>秘密保持契約書</w:t></w:r></w:p>',
+        '<w:p><w:pPr><w:pStyle w:val="NumberedHeading"/><w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:t>（目的）</w:t></w:r></w:p>',
+        '<w:p><w:r><w:t>第１条 本文です。</w:t></w:r></w:p>',
+      ]),
+    );
+
+    assert.equal(applyTemplateDocxFormatting(outputPath, templatePath), true);
+
+    const outputXml = readDocumentXml(outputPath);
+    assert.doesNotMatch(outputXml, /<w:pStyle w:val="NumberedHeading"\/>/);
+    assert.doesNotMatch(outputXml, /<w:numPr>/);
+    assert.match(outputXml, /<w:spacing w:before="240" w:after="120"\/>/);
+    assert.match(outputXml, /<w:sz w:val="24"\/>/);
+    assert.match(outputXml, /<w:jc w:val="center"\/>/);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
