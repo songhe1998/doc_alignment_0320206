@@ -8,7 +8,7 @@ const path = require('path');
 const test = require('node:test');
 
 const { buildPdfFormatOutline, extractPdfTextWithLayout } = require('../src/pdfFormatting');
-const { applyTemplatePdfMarkdownFormatting } = require('../src/alignCore');
+const { applyTemplatePdfMarkdownFormatting, resolvePdfTemplateLayout } = require('../src/alignCore');
 const { loadTemplatePromptText } = require('../src/documentLoader');
 
 function hasPyMuPdf() {
@@ -81,6 +81,31 @@ page = doc.new_page(width=612, height=792)
 page.insert_textbox(fitz.Rect(72, 58, 540, 92), "CONFIDENTIALITY AGREEMENT", fontsize=16, align=fitz.TEXT_ALIGN_CENTER)
 page.insert_textbox(fitz.Rect(72, 100, 540, 126), "for Project Atlas", fontsize=12, align=fitz.TEXT_ALIGN_CENTER)
 page.insert_text(fitz.Point(72, 166), "ARTICLE 1", fontsize=12)
+doc.save(sys.argv[1])
+`,
+      filePath,
+    ],
+    {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    },
+  );
+}
+
+function writeNarrowModestPdfFixture(filePath) {
+  childProcess.execFileSync(
+    'python3',
+    [
+      '-c',
+      String.raw`
+import fitz
+import sys
+
+doc = fitz.open()
+page = doc.new_page(width=612, height=792)
+page.insert_text(fitz.Point(144, 126), "MASTER SERVICES AGREEMENT", fontsize=10)
+page.insert_textbox(fitz.Rect(144, 146, 468, 190), "This MASTER SERVICES AGREEMENT is made by and between the parties.", fontsize=10)
+page.insert_text(fitz.Point(144, 220), "ARTICLE I DEFINITIONS", fontsize=10)
+page.insert_textbox(fitz.Rect(144, 240, 468, 284), "1.1 Services means professional services described by the parties.", fontsize=10)
 doc.save(sys.argv[1])
 `,
       filePath,
@@ -164,7 +189,7 @@ test('applyTemplatePdfMarkdownFormatting centers the first title when the PDF te
 
     assert.match(formatted, /^\\begin\{center\}/);
     assert.match(formatted, /\\bfseries CONFIDENTIALITY AGREEMENT\\par/);
-    assert.match(formatted, /## ARTICLE 1/);
+    assert.match(formatted, /ARTICLE 1/);
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
@@ -188,7 +213,42 @@ test('applyTemplatePdfMarkdownFormatting centers a short subtitle when the templ
 
     assert.match(formatted, /\\bfseries MUTUAL NON-DISCLOSURE/);
     assert.match(formatted, /\\large to Support Emergency Cyber Mutual Assistance\\par/);
-    assert.match(formatted, /## ARTICLE 1/);
+    assert.match(formatted, /ARTICLE 1/);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('PDF template layout narrows margins and tones down modest headings', { skip: !hasPyMuPdf() }, () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pdf-modest-heading-layout-'));
+  const templatePath = path.join(tempDir, 'template.pdf');
+
+  try {
+    writeNarrowModestPdfFixture(templatePath);
+
+    const layout = resolvePdfTemplateLayout(templatePath);
+    assert.ok(layout.geometry.leftIn > 1.8);
+    assert.ok(layout.geometry.rightIn > 1.8);
+    assert.ok(layout.geometry.topIn > 1.6);
+
+    const markdown = [
+      '# MASTER SERVICES AGREEMENT',
+      '',
+      'Introductory paragraph.',
+      '',
+      '## ARTICLE I',
+      '',
+      '## DEFINITIONS',
+      '',
+      '1.1 Services means professional services.',
+    ].join('\n');
+    const formatted = applyTemplatePdfMarkdownFormatting(markdown, templatePath);
+
+    assert.doesNotMatch(formatted, /^# MASTER/m);
+    assert.doesNotMatch(formatted, /^## ARTICLE/m);
+    assert.match(formatted, /\\fontsize\{10pt\}\{12pt\}\\selectfont MASTER SERVICES AGREEMENT/);
+    assert.match(formatted, /\\fontsize\{10pt\}\{12pt\}\\selectfont ARTICLE I DEFINITIONS/);
+    assert.doesNotMatch(formatted, /## DEFINITIONS/);
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
