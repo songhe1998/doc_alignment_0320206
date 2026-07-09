@@ -59,6 +59,151 @@ function writeZipText(filePath, entryName, value) {
   zip.writeZip(filePath);
 }
 
+function collectXmlIds(xml, tagName, attrName) {
+  const ids = new Set();
+  const regex = new RegExp(`<${tagName}\\b[^>]*${attrName}="(\\d+)"`, 'g');
+  let match;
+  while ((match = regex.exec(xml)) !== null) {
+    ids.add(match[1]);
+  }
+  return ids;
+}
+
+function nextUnusedId(usedIds) {
+  let candidate = 0;
+  for (const id of usedIds) {
+    const parsed = Number.parseInt(id, 10);
+    if (Number.isFinite(parsed) && parsed >= candidate) {
+      candidate = parsed + 1;
+    }
+  }
+  return String(candidate);
+}
+
+function extractNumberingEntry(numberingXml, numId) {
+  const numMatch = numberingXml.match(
+    new RegExp(`<w:num\\b[^>]*w:numId="${numId}"[^>]*>([\\s\\S]*?)<\\/w:num>|<w:num\\b[^>]*w:numId="${numId}"[^>]*\\/>`),
+  );
+  if (!numMatch) {
+    return null;
+  }
+
+  const abstractIdMatch = numMatch[0].match(/<w:abstractNumId\s+w:val="(\d+)"/);
+  if (!abstractIdMatch) {
+    return null;
+  }
+  const abstractNumId = abstractIdMatch[1];
+
+  const abstractMatch = numberingXml.match(
+    new RegExp(`<w:abstractNum\\b[^>]*w:abstractNumId="${abstractNumId}"[^>]*>[\\s\\S]*?<\\/w:abstractNum>`),
+  );
+  if (!abstractMatch) {
+    return null;
+  }
+
+  return { abstractNumId, abstractNumXml: abstractMatch[0] };
+}
+
+// pandoc's --reference-doc copies the reference document's styles.xml verbatim but
+// regenerates word/numbering.xml from scratch, so a template style/paragraph's numId
+// (e.g. the one driving a "第N条" heading prefix) no longer resolves to any numbering
+// definition in the generated output. This copies over just the abstractNum/num
+// definitions the aligned output actually needs, remapping ids on collision, and
+// returns a Map of templateNumId -> the id actually used in the output.
+function mergeRequiredNumbering(outputPath, templatePath, neededNumIds) {
+  const remap = new Map();
+  const uniqueNeeded = [...new Set(neededNumIds.filter(Boolean))];
+  if (!uniqueNeeded.length) {
+    return remap;
+  }
+
+  const templateNumberingXml = readZipText(templatePath, 'word/numbering.xml');
+  const outputNumberingXml = readZipText(outputPath, 'word/numbering.xml');
+  if (!templateNumberingXml || !/<\/w:numbering>/.test(outputNumberingXml)) {
+    return remap;
+  }
+
+  const usedNumIds = collectXmlIds(outputNumberingXml, 'w:num', 'w:numId');
+  const usedAbstractIds = collectXmlIds(outputNumberingXml, 'w:abstractNum', 'w:abstractNumId');
+  let additions = '';
+
+  for (const numId of uniqueNeeded) {
+    const entry = extractNumberingEntry(templateNumberingXml, numId);
+    if (!entry) {
+      continue;
+    }
+
+    const finalNumId = usedNumIds.has(numId) ? nextUnusedId(usedNumIds) : numId;
+    usedNumIds.add(finalNumId);
+
+    const finalAbstractNumId = usedAbstractIds.has(entry.abstractNumId)
+      ? nextUnusedId(usedAbstractIds)
+      : entry.abstractNumId;
+    usedAbstractIds.add(finalAbstractNumId);
+
+    const abstractNumXml = entry.abstractNumXml.replace(
+      /w:abstractNumId="\d+"/,
+      `w:abstractNumId="${finalAbstractNumId}"`,
+    );
+    const numXml = `<w:num w:numId="${finalNumId}"><w:abstractNumId w:val="${finalAbstractNumId}"/></w:num>`;
+
+    additions += abstractNumXml + numXml;
+    remap.set(numId, finalNumId);
+  }
+
+  if (additions) {
+    writeZipText(outputPath, 'word/numbering.xml', outputNumberingXml.replace('</w:numbering>', `${additions}</w:numbering>`));
+  }
+
+  return remap;
+}
+
+// Only needed when mergeRequiredNumbering had to move a style's numId to a fresh id to
+// avoid colliding with a numbering definition pandoc generated on its own.
+function remapStyleNumId(outputPath, styleId, originalNumId, finalNumId) {
+  if (!styleId || originalNumId === finalNumId) {
+    return;
+  }
+
+  const stylesXml = readZipText(outputPath, 'word/styles.xml');
+  const styleMatch = stylesXml.match(new RegExp(`<w:style\\b[^>]*w:styleId="${styleId}"[^>]*>[\\s\\S]*?<\\/w:style>`));
+  if (!styleMatch) {
+    return;
+  }
+
+  const patchedBlock = styleMatch[0].replace(
+    new RegExp(`(<w:numId\\s+w:val=")${originalNumId}(")`),
+    `$1${finalNumId}$2`,
+  );
+  if (patchedBlock === styleMatch[0]) {
+    return;
+  }
+
+  writeZipText(outputPath, 'word/styles.xml', stylesXml.replace(styleMatch[0], patchedBlock));
+}
+
+// Applies the numbering remap computed by mergeRequiredNumbering to a template profile
+// before it's used to format output paragraphs, so any numId it references is guaranteed
+// to resolve in the output docx (or is dropped rather than left dangling).
+function resolveProfileNumbering(profile, remap, outputPath) {
+  if (!profile) {
+    return profile;
+  }
+
+  if (profile.paragraphNumId) {
+    return { ...profile, paragraphNumId: remap.get(profile.paragraphNumId) || null };
+  }
+
+  if (profile.styleNumId) {
+    const finalNumId = remap.get(profile.styleNumId) || null;
+    if (finalNumId && finalNumId !== profile.styleNumId) {
+      remapStyleNumId(outputPath, profile.styleId, profile.styleNumId, finalNumId);
+    }
+  }
+
+  return profile;
+}
+
 function collectText(node) {
   if (node === undefined || node === null) {
     return '';
@@ -168,6 +313,7 @@ function parseStyles(stylesXml) {
     const pPr = style['w:pPr'] || style.pPr || {};
     const styleNameNode = style['w:name'] || style.name || {};
     const basedOnNode = style['w:basedOn'] || style.basedOn || {};
+    const styleNumPr = readParagraphNumPr(pPr);
 
     styles.set(styleId, {
       styleId,
@@ -178,7 +324,9 @@ function parseStyles(stylesXml) {
       spacingAfter: readSpacingValue(pPr['w:spacing'] || pPr.spacing, 'w:after'),
       bold: isBooleanOn(getChild(rPr, 'w:b', 'b')),
       sizeHalfPoints: readHalfPointSize(rPr['w:sz'] || rPr.sz),
-      hasNumbering: pPr['w:numPr'] || pPr.numPr ? true : undefined,
+      hasNumbering: styleNumPr.numId ? true : undefined,
+      numId: styleNumPr.numId,
+      numIlvl: styleNumPr.ilvl,
     });
   }
 
@@ -211,10 +359,24 @@ function median(values) {
   return sorted[Math.floor(sorted.length / 2)];
 }
 
+function readParagraphNumPr(pPr) {
+  const numPrNode = pPr['w:numPr'] || pPr.numPr || null;
+  if (!numPrNode) {
+    return { numId: null, ilvl: null };
+  }
+
+  const numId = getAttribute(numPrNode['w:numId'] || numPrNode.numId, 'w:val');
+  const ilvl = getAttribute(numPrNode['w:ilvl'] || numPrNode.ilvl, 'w:val');
+  // numId="0" is Word's sentinel for "no numbering", so it does not count as a
+  // real paragraph-level numbering override.
+  return { numId: numId && numId !== '0' ? numId : null, ilvl: ilvl ?? null };
+}
+
 function profileParagraph(paragraph, styles, previousWasBlank, index) {
   const pPr = paragraph['w:pPr'] || paragraph.pPr || {};
   const styleId = getAttribute(pPr['w:pStyle'] || pPr.pStyle, 'w:val');
   const style = resolveStyle(styleId, styles);
+  const { numId: paragraphNumId, ilvl: paragraphNumIlvl } = readParagraphNumPr(pPr);
   const runs = collectRuns(paragraph);
   const runSizes = runs
     .map((run) => readHalfPointSize((run['w:rPr'] || run.rPr || {})['w:sz'] || (run['w:rPr'] || run.rPr || {}).sz))
@@ -242,7 +404,11 @@ function profileParagraph(paragraph, styles, previousWasBlank, index) {
     bold: Boolean(directBold || pBold || style.bold),
     sizeHalfPoints: hasSize ? sizeHalfPoints : null,
     fontSizePt: hasSize ? sizeHalfPoints / 2 : null,
-    hasNumbering: Boolean(pPr['w:numPr'] || pPr.numPr || style.hasNumbering),
+    hasNumbering: Boolean(paragraphNumId || style.hasNumbering),
+    paragraphNumId,
+    paragraphNumIlvl,
+    styleNumId: style.numId ?? null,
+    styleNumIlvl: style.numIlvl ?? null,
   };
 }
 
@@ -444,10 +610,24 @@ function applyTextRunProperties(paragraphXml, profile) {
 function applyParagraphProfile(paragraphXml, profile) {
   let patched = paragraphXml;
 
-  if (profile.styleId && !profile.hasNumbering) {
+  if (profile.styleId) {
     patched = updateParagraphProperty(patched, 'w:pStyle', `<w:pStyle w:val="${xmlEscape(profile.styleId)}"/>`);
   } else {
     patched = removeParagraphProperty(patched, 'w:pStyle');
+  }
+
+  if (profile.paragraphNumId) {
+    // Numbering defined on the paragraph itself (not inherited from styleId) has to be
+    // copied explicitly, or the paragraph loses its rendered "第N条"-style prefix.
+    const ilvl = profile.paragraphNumIlvl ?? '0';
+    patched = updateParagraphProperty(
+      patched,
+      'w:numPr',
+      `<w:numPr><w:ilvl w:val="${xmlEscape(ilvl)}"/><w:numId w:val="${xmlEscape(profile.paragraphNumId)}"/></w:numPr>`,
+    );
+  } else {
+    // Otherwise numbering (if any) comes from the assigned style itself, so any stale
+    // paragraph-level override copied from pandoc/the model's own output is dropped.
     patched = removeParagraphProperty(patched, 'w:numPr');
   }
 
@@ -531,6 +711,11 @@ function applyTemplateDocxFormatting(outputPath, templatePath) {
     return false;
   }
 
+  const neededNumIds = [title, heading].filter(Boolean).map((profile) => profile.paragraphNumId || profile.styleNumId);
+  const numberingRemap = mergeRequiredNumbering(outputPath, templatePath, neededNumIds);
+  const resolvedTitle = resolveProfileNumbering(title, numberingRemap, outputPath);
+  const resolvedHeading = resolveProfileNumbering(heading, numberingRemap, outputPath);
+
   const outputProfiles = extractDocxParagraphProfiles(outputPath);
   const paragraphMatches = extractParagraphXml(documentXml);
   let nonEmptySeen = 0;
@@ -554,15 +739,15 @@ function applyTemplateDocxFormatting(outputPath, templatePath) {
 
     if (profile && !profile.isEmpty) {
       nonEmptySeen += 1;
-      if (nonEmptySeen === 1 && title) {
-        paragraphXml = applyParagraphProfile(paragraphXml, title);
+      if (nonEmptySeen === 1 && resolvedTitle) {
+        paragraphXml = applyParagraphProfile(paragraphXml, resolvedTitle);
       } else if (SIGNATURE_FIELD_LABEL_REGEX.test(profile.text)) {
         paragraphXml = demoteSignatureFieldParagraph(paragraphXml);
-      } else if (heading && isOutputHeading(profile)) {
-        if (heading.blankBefore) {
+      } else if (resolvedHeading && isOutputHeading(profile)) {
+        if (resolvedHeading.blankBefore) {
           prefix = '<w:p/>';
         }
-        paragraphXml = applyParagraphProfile(paragraphXml, heading);
+        paragraphXml = applyParagraphProfile(paragraphXml, resolvedHeading);
       }
     }
 
