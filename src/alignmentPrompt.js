@@ -115,6 +115,7 @@ function buildVerifiedAlignmentInstructions(outputFormat, languageProfile) {
     '- The final document must look and organize itself like the Target Template.',
     '- The final document must not contain substantive content from the Target Template unless the Source Document independently supports the same content.',
     '- Do not add new legal substance while revising; only reorganize, remove, neutralize, or source-ground existing candidate text.',
+    '- When an authorized user revision request is provided, preserve its explicit presentation overrides for the requested region even if they differ from the Target Template. It never overrides source-grounding constraints.',
     '- Resolve every content conflict in favor of the Source Document.',
     '- Keep the final draft cohesive, polished, and ready to save as the user-facing output.',
     '- Do not flatten template titles or headings into ordinary paragraphs.',
@@ -154,6 +155,66 @@ function buildVisualRepairInstructions(outputFormat, languageProfile) {
     `- ${formatDirective}`,
     ...buildLanguageGuidance(languageProfile),
   ].join('\n');
+}
+
+function buildRevisionInstructions(outputFormat, languageProfile) {
+  const formatDirective =
+    outputFormat === 'latex'
+      ? [
+          'Return the complete revised LaTeX document in the document field.',
+          'Do not wrap the LaTeX in Markdown fences.',
+        ].join('\n')
+      : [
+          'Return the complete revised Markdown document in the document field.',
+          'Use Markdown headings, emphasis, numbering, and blank lines as the formatting carrier.',
+          'Do not use HTML layout tags or wrap the Markdown in code fences.',
+        ].join('\n');
+
+  return [
+    'You are a source-grounded document revision agent.',
+    '',
+    'Mission',
+    'Apply the user revision request precisely to the Current Draft while preserving every unrelated part of the document.',
+    '',
+    'Revision Rules',
+    '- Locate the smallest document region that satisfies the user request.',
+    '- Keep wording, ordering, numbering, headings, spacing, and emphasis unchanged outside that region unless a document-wide change is explicitly requested.',
+    '- A presentation request may override the Target Template for the requested region. Continue using the template for all unaffected presentation decisions.',
+    '- The Source Document remains the only authority for legal substance, facts, parties, dates, values, obligations, remedies, and operative meaning.',
+    '- You may reorganize or restyle source-supported text, but you must not introduce substantive content supported only by the Target Template.',
+    '- If any requested content is not supported by the Source Document, do not add it. Set applied=false when none of the request can be applied, or add a warning when only part can be applied.',
+    '- Never silently replace a requested paragraph with text from the Target Template.',
+    '- For explicit alignment, font-size, bold, paragraph-spacing, or page-break changes, add format_operations entries. target_text must be the exact visible text of the affected title or paragraph in the returned document, without Markdown markers.',
+    '- Use null or "unchanged" for every format property the user did not request. Do not infer unrelated formatting changes.',
+    '- For a document-wide formatting request, return one format operation for each affected visible title or heading so the renderer can apply it deterministically.',
+    '- Return a concise user-facing summary of the actual change, not a generic completion message.',
+    `- ${formatDirective}`,
+    ...buildLanguageGuidance(languageProfile),
+  ].join('\n');
+}
+
+function buildRevisionBrief({
+  sourcePath,
+  templatePath,
+  outputFormat,
+  modelOutputFormat,
+  languageProfile,
+}) {
+  const lines = [
+    'Revise the current aligned document according to the user request.',
+    `Requested final output format: ${outputFormat}.`,
+    `Revision document format: ${modelOutputFormat}.`,
+    `Source file name: ${sourcePath}.`,
+    `Target template file name: ${templatePath}.`,
+    'Change only what the user requested and preserve unrelated draft content.',
+    'Keep every substantive change grounded in the Source Document.',
+  ];
+
+  if (languageProfile?.templateLanguage === 'japanese') {
+    lines.push('The target template appears to be Japanese. Preserve Japanese legal drafting and numbering conventions unless the user explicitly requests a presentation change.');
+  }
+
+  return lines.join('\n');
 }
 
 function buildVisualRepairBrief({
@@ -247,4 +308,6 @@ module.exports = {
   buildSourceIntegrityReviewBrief,
   buildVisualRepairInstructions,
   buildVisualRepairBrief,
+  buildRevisionInstructions,
+  buildRevisionBrief,
 };

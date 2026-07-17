@@ -16,6 +16,8 @@ This project aligns a source legal document into the structural container of a t
 - Encodes your "Structural Migration" prompt directly into the developer instructions
 - Runs a verified post-generation agent layer that keeps the target template's format while removing or rewriting template-only substantive content
 - For rendered `.docx` and `.pdf` outputs, can run a VLM visual checker after rendering; if it finds medium/high visual issues, the pipeline performs a visual-format repair pass and rechecks
+- Keeps browser runs as revision sessions so users can describe a local change, preview the new file, review version history, undo, and download the active version
+- Converts chat requests for alignment, font size, bold, paragraph spacing, and page breaks into deterministic DOCX/PDF format operations while locking wording for format-only revisions
 
 ## Setup
 
@@ -123,6 +125,9 @@ The UI supports:
 - selecting sample files from `data/`, `examples/`, and `manual_test_assets/`
 - automatic output-format inference, or forcing `markdown`, `docx`, `pdf`, or `latex`
 - downloading the generated result from the browser after the run completes
+- revising the completed result through a source-grounded chat without restarting the alignment
+- rendered PDF previews for PDF output and LibreOffice-backed PDF previews for DOCX output
+- persistent chat history, version history, and parent-version undo for the lifetime of the hosted run
 
 ## Render Deployment
 
@@ -152,6 +157,7 @@ Notes for hosted use:
 
 - The Docker image installs `pandoc`, `xelatex`, `lmodern`, Japanese fonts, LibreOffice Writer, and PyMuPDF so `docx`, `pdf`, Japanese/CJK PDF output, and rendered DOCX visual checks work in Render.
 - Browser-triggered files are stored under `./output/ui/<request-id>/` and old runs are cleaned up automatically based on `OUTPUT_RETENTION_HOURS`.
+- Each browser run stores private source/template copies, intermediate drafts, exported versions, previews, and chat metadata in its request directory so revisions remain reproducible until retention cleanup.
 - Render instances use ephemeral local storage by default, so generated files are meant for immediate download, not long-term retention.
 
 ## CLI options

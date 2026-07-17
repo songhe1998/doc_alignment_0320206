@@ -3,59 +3,62 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Document Alignment Lab</title>
+    <title>Document Alignment</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
-    <main class="app-shell">
-      <section class="hero">
-        <p class="eyebrow">Document Alignment Lab</p>
-        <h1>Test Structural Migration in a browser.</h1>
-        <p class="hero-copy">
-          Upload a source document and a target template, or use files from <code>data/</code> and
-          <code>examples/</code>. The app preserves source substance, transplants template structure,
-          and returns the result in the inferred format unless you override it.
-        </p>
-      </section>
+    <header class="topbar">
+      <div class="brand-block">
+        <h1>Document Alignment</h1>
+        <p>Source-grounded drafting workspace</p>
+      </div>
+      <div id="status-card" class="status-card idle" aria-live="polite">
+        <span class="status-dot" aria-hidden="true"></span>
+        <span id="status-text">Ready</span>
+      </div>
+    </header>
 
-      <section class="workspace">
-        <form id="align-form" class="panel form-panel">
-          <div class="panel-header">
-            <h2>New Run</h2>
-            <p>Uploads override sample selections. Leave format on auto to follow the template.</p>
+    <main class="app-shell">
+      <section id="setup-workspace" class="setup-workspace">
+        <form id="align-form" class="setup-form">
+          <div class="section-heading">
+            <div>
+              <p class="section-kicker">New alignment</p>
+              <h2>Source and template</h2>
+            </div>
           </div>
 
-          <div class="field-grid">
-            <fieldset class="file-card">
-              <legend>Source Document</legend>
+          <div class="document-inputs">
+            <fieldset class="document-input">
+              <legend>Source document</legend>
               <label class="field">
-                <span>Sample file</span>
+                <span>Sample</span>
                 <select id="source-sample" name="sourceSample">
                   <option value="">Choose a sample</option>
                 </select>
               </label>
               <label class="field">
-                <span>Upload file</span>
+                <span>Upload</span>
                 <input id="source-file" name="sourceFile" type="file" accept=".pdf,.docx,.md,.markdown,.txt,.text" />
               </label>
             </fieldset>
 
-            <fieldset class="file-card">
-              <legend>Target Template</legend>
+            <fieldset class="document-input">
+              <legend>Target template</legend>
               <label class="field">
-                <span>Sample file</span>
+                <span>Sample</span>
                 <select id="template-sample" name="templateSample">
                   <option value="">Choose a sample</option>
                 </select>
               </label>
               <label class="field">
-                <span>Upload file</span>
+                <span>Upload</span>
                 <input id="template-file" name="templateFile" type="file" accept=".pdf,.docx,.md,.markdown,.txt,.text" />
               </label>
             </fieldset>
           </div>
 
-          <div class="field-grid compact">
+          <div class="run-options">
             <label class="field">
               <span>Output format</span>
               <select name="format" id="format">
@@ -75,82 +78,113 @@
             <label class="field">
               <span>Reasoning</span>
               <select name="reasoning">
-                <option value="medium">medium</option>
-                <option value="low">low</option>
-                <option value="high">high</option>
-                <option value="xhigh">xhigh</option>
-                <option value="none">none</option>
+                <option value="medium">Medium</option>
+                <option value="low">Low</option>
+                <option value="high">High</option>
+                <option value="xhigh">Extra high</option>
+                <option value="none">None</option>
               </select>
             </label>
 
             <label class="field">
-              <span>Max output tokens</span>
+              <span>Max tokens</span>
               <input name="maxOutputTokens" type="number" min="256" step="256" value="12000" />
             </label>
           </div>
 
           <details class="advanced">
-            <summary>Advanced</summary>
-            <div class="field-grid compact">
+            <summary>Advanced settings</summary>
+            <div class="run-options advanced-options">
               <label class="field">
                 <span>Model override</span>
-                <input name="model" type="text" placeholder="Leave blank for default" />
+                <input name="model" type="text" placeholder="Default model" />
               </label>
               <label class="field">
-                <span>PDF engine override</span>
-                <input name="pdfEngine" type="text" placeholder="auto / xelatex / pdflatex" />
+                <span>PDF engine</span>
+                <input name="pdfEngine" type="text" placeholder="Auto" />
               </label>
             </div>
           </details>
 
-          <div class="actions">
-            <button id="submit-button" type="submit">Run Alignment</button>
-            <p id="form-hint" class="form-hint">Auto mode resolves format from the template first.</p>
+          <div class="form-actions">
+            <button id="submit-button" class="primary-button" type="submit">Run alignment</button>
+            <span>Template format, source content</span>
           </div>
         </form>
 
-        <section class="panel result-panel">
-          <div class="panel-header">
-            <h2>Run Output</h2>
-            <p>Resolved format, token usage, server logs, and download link appear here.</p>
-          </div>
-
-          <div id="status-card" class="status-card idle">
-            <span class="status-dot"></span>
-            <span id="status-text">Idle</span>
+        <aside class="run-panel">
+          <div class="section-heading compact-heading">
+            <div>
+              <p class="section-kicker">Run details</p>
+              <h2>Output</h2>
+            </div>
           </div>
 
           <div id="result-summary" class="summary hidden">
-            <div class="summary-grid">
-              <div>
-                <p class="summary-label">Output format</p>
-                <p id="summary-format" class="summary-value">-</p>
-              </div>
-              <div>
-                <p class="summary-label">Model used</p>
-                <p id="summary-model" class="summary-value">-</p>
-              </div>
-              <div>
-                <p class="summary-label">Output file</p>
-                <p id="summary-file" class="summary-value">-</p>
-              </div>
-              <div>
-                <p class="summary-label">Tokens</p>
-                <p id="summary-usage" class="summary-value">-</p>
-              </div>
-            </div>
-            <a id="download-link" class="download-link" href="#" target="_blank" rel="noreferrer">Download result</a>
+            <dl class="summary-list">
+              <div><dt>Format</dt><dd id="summary-format">-</dd></div>
+              <div><dt>Model</dt><dd id="summary-model">-</dd></div>
+              <div><dt>File</dt><dd id="summary-file">-</dd></div>
+              <div><dt>Tokens</dt><dd id="summary-usage">-</dd></div>
+            </dl>
+            <a id="download-link" class="text-link" href="#" target="_blank" rel="noreferrer">Download result</a>
           </div>
 
-          <div id="error-box" class="error-box hidden"></div>
+          <div id="error-box" class="error-box hidden" role="alert"></div>
+          <pre id="log-output" class="log-output">No run yet.</pre>
+        </aside>
+      </section>
 
-          <div class="logs">
-            <div class="logs-header">
-              <h3>Run Log</h3>
-            </div>
-            <pre id="log-output">No run yet.</pre>
+      <section id="review-workspace" class="review-workspace hidden">
+        <div class="review-toolbar">
+          <div class="document-title-block">
+            <p id="review-context">Source → Template</p>
+            <h2 id="review-file">Aligned document</h2>
           </div>
-        </section>
+          <div class="toolbar-actions">
+            <span id="version-label" class="version-label">Version 1</span>
+            <button id="undo-button" class="secondary-button" type="button" disabled>Undo</button>
+            <a id="review-download-link" class="primary-link" href="#" target="_blank" rel="noreferrer">Download</a>
+            <button id="new-run-button" class="secondary-button" type="button">New alignment</button>
+          </div>
+        </div>
+
+        <div class="review-grid">
+          <aside class="chat-pane">
+            <div class="pane-heading">
+              <h3>Revision chat</h3>
+              <span id="chat-state">Ready</span>
+            </div>
+            <div id="chat-thread" class="chat-thread" aria-live="polite"></div>
+            <form id="revision-form" class="revision-form">
+              <label for="revision-input" class="sr-only">Revision request</label>
+              <textarea id="revision-input" rows="4" maxlength="4000" placeholder="Describe the exact change…"></textarea>
+              <button id="revision-submit" class="primary-button" type="submit">Apply revision</button>
+            </form>
+          </aside>
+
+          <section class="preview-pane">
+            <div class="pane-heading">
+              <h3>Current result</h3>
+              <span id="preview-format">-</span>
+            </div>
+            <div id="preview-loading" class="preview-loading">Loading preview…</div>
+            <iframe id="pdf-preview" class="pdf-preview hidden" title="Rendered document preview"></iframe>
+            <pre id="text-preview" class="text-preview hidden"></pre>
+          </section>
+
+          <aside class="history-pane">
+            <div class="pane-heading">
+              <h3>Versions</h3>
+              <span id="history-count">1</span>
+            </div>
+            <ol id="version-history" class="version-history"></ol>
+            <details class="session-logs">
+              <summary>Latest run log</summary>
+              <pre id="review-log-output">No revision run yet.</pre>
+            </details>
+          </aside>
+        </div>
       </section>
     </main>
 

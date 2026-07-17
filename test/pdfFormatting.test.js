@@ -8,7 +8,11 @@ const path = require('path');
 const test = require('node:test');
 
 const { buildPdfFormatOutline, extractPdfTextWithLayout } = require('../src/pdfFormatting');
-const { applyTemplatePdfMarkdownFormatting, resolvePdfTemplateLayout } = require('../src/alignCore');
+const {
+  applyPdfFormatOverrides,
+  applyTemplatePdfMarkdownFormatting,
+  resolvePdfTemplateLayout,
+} = require('../src/alignCore');
 const { loadTemplatePromptText } = require('../src/documentLoader');
 
 function hasPyMuPdf() {
@@ -16,6 +20,10 @@ function hasPyMuPdf() {
     stdio: 'ignore',
   });
   return result.status === 0;
+}
+
+function hasCommand(command) {
+  return childProcess.spawnSync(command, ['--version'], { stdio: 'ignore' }).status === 0;
 }
 
 function writePdfFixture(filePath) {
@@ -254,7 +262,7 @@ test('PDF template layout narrows margins and tones down modest headings', { ski
   }
 });
 
-test('plain Markdown PDF templates keep generated titles and headings plain', () => {
+test('plain Markdown templates treat soft-wrapped article lines as one rendered heading', () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pdf-plain-markdown-template-'));
   const templatePath = path.join(tempDir, 'template.md');
 
@@ -294,9 +302,51 @@ test('plain Markdown PDF templates keep generated titles and headings plain', ()
     assert.doesNotMatch(formatted, /^# /m);
     assert.doesNotMatch(formatted, /^## /m);
     assert.match(formatted, /^CONFIDENTIALITY AGREEMENT$/m);
-    assert.match(formatted, /ARTICLE I\nDEFINITIONS/);
-    assert.match(formatted, /ARTICLE II\nTERM AND TERMINATION/);
-    assert.match(formatted, /ARTICLE III\nMISCELLANEOUS/);
+    assert.match(formatted, /ARTICLE I DEFINITIONS\n\\par\\nopagebreak\[4\]/);
+    assert.match(formatted, /ARTICLE II TERM AND TERMINATION\n\\par\\nopagebreak\[4\]/);
+    assert.match(formatted, /ARTICLE III MISCELLANEOUS\n\\par\\nopagebreak\[4\]/);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('Markdown hard breaks preserve split article heading lines', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pdf-hard-break-template-'));
+  const templatePath = path.join(tempDir, 'template.md');
+
+  try {
+    fs.writeFileSync(
+      templatePath,
+      ['MASTER SERVICES AGREEMENT', '', 'ARTICLE I  ', 'DEFINITIONS'].join('\n'),
+      'utf8',
+    );
+    const formatted = applyTemplatePdfMarkdownFormatting(
+      ['# CONFIDENTIALITY AGREEMENT', '', '## ARTICLE I DEFINITIONS'].join('\n'),
+      templatePath,
+    );
+
+    assert.match(formatted, /ARTICLE I  \n\\nopagebreak\[4\]\nDEFINITIONS\n\\par\\nopagebreak\[4\]/);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('plain text templates preserve physical article heading line breaks', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pdf-plain-text-template-'));
+  const templatePath = path.join(tempDir, 'template.txt');
+
+  try {
+    fs.writeFileSync(
+      templatePath,
+      ['MASTER SERVICES AGREEMENT', '', 'ARTICLE I', 'DEFINITIONS'].join('\n'),
+      'utf8',
+    );
+    const formatted = applyTemplatePdfMarkdownFormatting(
+      ['# CONFIDENTIALITY AGREEMENT', '', '## ARTICLE I DEFINITIONS'].join('\n'),
+      templatePath,
+    );
+
+    assert.match(formatted, /ARTICLE I  \n\\nopagebreak\[4\]\nDEFINITIONS\n\\par\\nopagebreak\[4\]/);
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
@@ -317,8 +367,187 @@ test('Markdown PDF templates with heading markup keep generated heading markup',
     const formatted = applyTemplatePdfMarkdownFormatting(markdown, templatePath);
 
     assert.match(formatted, /^# CONFIDENTIALITY AGREEMENT$/m);
-    assert.match(formatted, /^## ARTICLE I DEFINITIONS$/m);
+    assert.match(formatted, /^## ARTICLE I$/m);
+    assert.match(formatted, /^## DEFINITIONS$/m);
+    assert.match(formatted, /## DEFINITIONS\n\\nopagebreak\[4\]/);
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
+});
+
+test('combined plain templates combine generated split headings without copying template captions', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pdf-combined-markdown-template-'));
+  const templatePath = path.join(tempDir, 'template.md');
+
+  try {
+    fs.writeFileSync(
+      templatePath,
+      ['MASTER SERVICES AGREEMENT', '', 'ARTICLE I PAYMENT TERMS'].join('\n'),
+      'utf8',
+    );
+    const markdown = [
+      '# CONFIDENTIALITY AGREEMENT',
+      '',
+      '## ARTICLE I',
+      '',
+      '### CONFIDENTIAL INFORMATION',
+    ].join('\n');
+    const formatted = applyTemplatePdfMarkdownFormatting(markdown, templatePath);
+
+    assert.match(formatted, /^ARTICLE I CONFIDENTIAL INFORMATION$/m);
+    assert.doesNotMatch(formatted, /PAYMENT TERMS/);
+    assert.doesNotMatch(formatted, /^CONFIDENTIAL INFORMATION$/m);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('mixed templates normalize exact article labels but leave unsupported labels unchanged', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pdf-mixed-markdown-template-'));
+  const templatePath = path.join(tempDir, 'template.md');
+
+  try {
+    fs.writeFileSync(
+      templatePath,
+      [
+        '# MASTER SERVICES AGREEMENT',
+        '',
+        '## ARTICLE I',
+        '### DEFINITIONS',
+        '',
+        '## ARTICLE II TERM',
+      ].join('\n'),
+      'utf8',
+    );
+    const markdown = [
+      '# CONFIDENTIALITY AGREEMENT',
+      '',
+      '## ARTICLE I CONFIDENTIAL INFORMATION',
+      '',
+      '## ARTICLE II',
+      '### DURATION',
+      '',
+      '## ARTICLE III MISCELLANEOUS',
+    ].join('\n');
+    const formatted = applyTemplatePdfMarkdownFormatting(markdown, templatePath);
+
+    assert.match(formatted, /^## ARTICLE I$/m);
+    assert.match(formatted, /^### CONFIDENTIAL INFORMATION$/m);
+    assert.match(formatted, /^## ARTICLE II DURATION$/m);
+    assert.match(formatted, /^## ARTICLE III MISCELLANEOUS$/m);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('PDF formatting keeps Markdown, bold-only, and split headings with following content', () => {
+  const markdown = [
+    '# AGREEMENT',
+    '',
+    '## ARTICLE I',
+    '',
+    '### DEFINITIONS',
+    '',
+    'Definition text.',
+    '',
+    '**9. No Warranties or Representations.**',
+    '',
+    'The warranty paragraph follows.',
+  ].join('\n');
+
+  const formatted = applyTemplatePdfMarkdownFormatting(markdown, '');
+
+  assert.match(formatted, /# AGREEMENT\n\\nopagebreak\[4\]/);
+  assert.match(formatted, /## ARTICLE I\n\\nopagebreak\[4\]/);
+  assert.match(formatted, /### DEFINITIONS\n\\nopagebreak\[4\]/);
+  assert.match(formatted, /\*\*9\. No Warranties or Representations\.\*\*\n\\nopagebreak\[4\]/);
+  assert.equal((formatted.match(/\\nopagebreak\[4\]/g) || []).length, 4);
+});
+
+test(
+  'rendered PDF keeps a bold legal heading with its following paragraph',
+  { skip: !hasPyMuPdf() || !hasCommand('pandoc') || !hasCommand('xelatex') },
+  () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pdf-heading-pagination-'));
+    const outputPath = path.join(tempDir, 'output.pdf');
+
+    try {
+      const filler = Array.from(
+        { length: 42 },
+        (_, index) =>
+          `Filler paragraph ${index + 1}. This sentence occupies enough horizontal space to exercise normal legal-document line wrapping near the page boundary.`,
+      ).join('\n\n');
+      const markdown = [
+        '# PAGINATION REGRESSION',
+        '',
+        filler,
+        '',
+        '**9. No Warranties or Representations.**',
+        '',
+        'The warranty paragraph follows the heading and must remain on the same page.',
+      ].join('\n');
+      const formatted = applyTemplatePdfMarkdownFormatting(markdown, '');
+      const conversion = childProcess.spawnSync(
+        'pandoc',
+        [
+          '-f',
+          'markdown+raw_tex',
+          '--pdf-engine=xelatex',
+          '-Vgeometry=margin=1in',
+          '-o',
+          outputPath,
+        ],
+        { input: formatted, encoding: 'utf8' },
+      );
+      assert.equal(conversion.status, 0, conversion.stderr);
+
+      const pageLookup = childProcess.execFileSync(
+        'python3',
+        [
+          '-c',
+          [
+            'import fitz, json, sys',
+            'doc = fitz.open(sys.argv[1])',
+            'pages = [page.get_text() for page in doc]',
+            'heading = next(i for i, text in enumerate(pages) if "9. No Warranties or Representations." in text)',
+            'body = next(i for i, text in enumerate(pages) if "The warranty paragraph follows" in text)',
+            'print(json.dumps({"heading": heading, "body": body, "pages": len(pages)}))',
+          ].join('; '),
+          outputPath,
+        ],
+        { encoding: 'utf8' },
+      );
+      const pageResult = JSON.parse(pageLookup);
+      assert.equal(pageResult.heading, pageResult.body);
+      assert.ok(pageResult.pages >= 2);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  },
+);
+
+test('PDF format overrides render exact user alignment, font size, and spacing requests', () => {
+  const markdown = [
+    '# CONFIDENTIALITY AGREEMENT',
+    '',
+    'Body text remains unchanged.',
+  ].join('\n');
+
+  const formatted = applyPdfFormatOverrides(markdown, [
+    {
+      targetText: 'CONFIDENTIALITY AGREEMENT',
+      alignment: 'center',
+      fontSizePt: 18,
+      bold: true,
+      spaceBeforePt: 12,
+      spaceAfterPt: 6,
+      pageBreakBefore: null,
+    },
+  ]);
+
+  assert.match(formatted, /\\vspace\*\{12pt\}/);
+  assert.match(formatted, /\\begin\{center\}/);
+  assert.match(formatted, /\\fontsize\{18pt\}\{21\.6pt\}\\selectfont \\bfseries CONFIDENTIALITY AGREEMENT/);
+  assert.match(formatted, /\\vspace\*\{6pt\}/);
+  assert.match(formatted, /Body text remains unchanged\./);
 });

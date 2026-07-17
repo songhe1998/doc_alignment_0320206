@@ -15,12 +15,21 @@ const {
   buildVerifiedAlignmentBrief,
   buildVisualRepairInstructions,
   buildVisualRepairBrief,
+  buildRevisionInstructions,
+  buildRevisionBrief,
 } = require('./alignmentPrompt');
 const {
+  applyDocxFormatOverrides,
   applyTemplateDocxFormatting,
   extractDocxParagraphProfiles,
 } = require('./docxFormatting');
 const { loadDocumentText, loadTemplatePromptText } = require('./documentLoader');
+const {
+  buildArticleHeadingLayout,
+  isLikelyHeadingCaption,
+  parseArticleHeading,
+  resolveArticleHeadingRule,
+} = require('./headingLayout');
 const { extractPdfLineProfiles } = require('./pdfFormatting');
 const {
   resolveVisualCheckOptions,
@@ -86,6 +95,46 @@ const EXTENSION_TO_OUTPUT_FORMAT = new Map([
   ['.docx', 'docx'],
   ['.pdf', 'pdf'],
 ]);
+const REVISION_RESPONSE_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['document', 'summary', 'change_type', 'applied', 'warnings', 'format_operations'],
+  properties: {
+    document: { type: 'string' },
+    summary: { type: 'string' },
+    change_type: { type: 'string', enum: ['format', 'content', 'mixed', 'none'] },
+    applied: { type: 'boolean' },
+    warnings: {
+      type: 'array',
+      items: { type: 'string' },
+    },
+    format_operations: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: [
+          'target_text',
+          'alignment',
+          'font_size_pt',
+          'bold',
+          'space_before_pt',
+          'space_after_pt',
+          'page_break_before',
+        ],
+        properties: {
+          target_text: { type: 'string' },
+          alignment: { type: 'string', enum: ['unchanged', 'left', 'center', 'right'] },
+          font_size_pt: { anyOf: [{ type: 'number' }, { type: 'null' }] },
+          bold: { anyOf: [{ type: 'boolean' }, { type: 'null' }] },
+          space_before_pt: { anyOf: [{ type: 'number' }, { type: 'null' }] },
+          space_after_pt: { anyOf: [{ type: 'number' }, { type: 'null' }] },
+          page_break_before: { anyOf: [{ type: 'boolean' }, { type: 'null' }] },
+        },
+      },
+    },
+  },
+};
 
 function createLogger(logger = console) {
   return {
@@ -159,6 +208,91 @@ function combineUsages(usages) {
 
 function hasUsage(usage) {
   return Boolean(usage?.input_tokens || usage?.output_tokens || usage?.total_tokens);
+}
+
+function parseRevisionResponse(text, currentDocument) {
+  const raw = String(text || '').trim();
+  if (!raw) {
+    throw new Error('Revision agent returned no text output.');
+  }
+
+  let value;
+  try {
+    value = JSON.parse(raw);
+  } catch (error) {
+    const fencedMatch = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    if (!fencedMatch) {
+      throw new Error(`Revision agent returned invalid JSON: ${error.message}`);
+    }
+    value = JSON.parse(fencedMatch[1].trim());
+  }
+
+  const document = String(value?.document || '').trim();
+  if (!document) {
+    throw new Error('Revision agent returned an empty document.');
+  }
+
+  const applied = Boolean(value.applied);
+  const changeType = ['format', 'content', 'mixed', 'none'].includes(value.change_type)
+    ? value.change_type
+    : applied
+      ? 'mixed'
+      : 'none';
+  const warnings = Array.isArray(value.warnings)
+    ? value.warnings.map((warning) => String(warning).trim()).filter(Boolean)
+    : [];
+  const formatOperations = Array.isArray(value.format_operations)
+    ? value.format_operations
+        .slice(0, 100)
+        .map((operation) => ({
+          targetText: String(operation?.target_text || '').trim(),
+          alignment: ['left', 'center', 'right'].includes(operation?.alignment)
+            ? operation.alignment
+            : null,
+          fontSizePt: Number.isFinite(operation?.font_size_pt)
+            ? clamp(operation.font_size_pt, 6, 72)
+            : null,
+          bold: typeof operation?.bold === 'boolean' ? operation.bold : null,
+          spaceBeforePt: Number.isFinite(operation?.space_before_pt)
+            ? clamp(operation.space_before_pt, 0, 144)
+            : null,
+          spaceAfterPt: Number.isFinite(operation?.space_after_pt)
+            ? clamp(operation.space_after_pt, 0, 144)
+            : null,
+          pageBreakBefore: typeof operation?.page_break_before === 'boolean'
+            ? operation.page_break_before
+            : null,
+        }))
+        .filter((operation) => operation.targetText)
+    : [];
+
+  return {
+    document: applied ? document : String(currentDocument || '').trim(),
+    summary: String(value.summary || (applied ? 'Applied the requested revision.' : 'No revision was applied.')).trim(),
+    changeType,
+    applied,
+    warnings,
+    formatOperations: applied ? formatOperations : [],
+  };
+}
+
+function normalizeDocumentSubstance(documentText) {
+  return String(documentText || '')
+    .split('\n')
+    .filter((line) => !/^\s*\|?\s*:?-{3,}/.test(line))
+    .map((line) => line
+      .replace(/^\s{0,3}#{1,6}\s+/, '')
+      .replace(/^\s*>\s?/, '')
+      .replace(/<[^>]+>/g, '')
+      .replace(/[|*_`]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim())
+    .filter(Boolean)
+    .join('\n');
+}
+
+function preservesFormatOnlySubstance(candidateDocument, currentDocument) {
+  return normalizeDocumentSubstance(candidateDocument) === normalizeDocumentSubstance(currentDocument);
 }
 
 function median(values) {
@@ -526,18 +660,89 @@ function renderLatexStyledLine(text, { fontSizePt = 10, bold = false, alignment 
   return `\\noindent${body}`;
 }
 
+function markdownLineIsBold(line) {
+  const parts = headingLineParts(line);
+  const body = parts ? parts.text : String(line || '').trim();
+  return Boolean(parts || /^(\*\*|__)[\s\S]+\1$/.test(body));
+}
+
+function defaultMarkdownFontSize(line) {
+  const parts = headingLineParts(line);
+  if (!parts) {
+    return 10;
+  }
+  if (parts.level === 1) {
+    return 16;
+  }
+  if (parts.level === 2) {
+    return 13;
+  }
+  return 11;
+}
+
+function applyPdfFormatOverrides(markdown, operations = [], templatePath = '') {
+  const activeOperations = operations.filter((operation) => operation?.targetText);
+  if (!activeOperations.length) {
+    return markdown;
+  }
+
+  const lines = String(markdown || '').split('\n');
+  const firstNonEmptyIndex = lines.findIndex((line) => line.trim());
+  const openingProfiles = getTemplateOpeningProfiles(templatePath);
+  const layout = resolvePdfTemplateLayout(templatePath);
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const parts = headingLineParts(line);
+    const visibleText = stripInlineMarkdown(parts ? parts.text : line);
+    const operation = activeOperations.find(
+      (candidate) => candidate.targetText.replace(/\s+/g, ' ').trim() === visibleText.replace(/\s+/g, ' ').trim(),
+    );
+    if (!operation) {
+      continue;
+    }
+
+    const profile = index === firstNonEmptyIndex
+      ? openingProfiles.title
+      : parts
+        ? layout?.heading || null
+        : null;
+    const hasTextStyleOverride =
+      operation.alignment || operation.fontSizePt !== null || operation.bold !== null;
+    const rendered = [];
+
+    if (operation.pageBreakBefore === true) {
+      rendered.push('\\newpage');
+    }
+    if (operation.spaceBeforePt !== null && operation.spaceBeforePt > 0) {
+      rendered.push(`\\vspace*{${formatLatexNumber(operation.spaceBeforePt)}pt}`);
+    }
+
+    if (hasTextStyleOverride) {
+      rendered.push(renderLatexStyledLine(visibleText, {
+        fontSizePt: operation.fontSizePt ?? profile?.fontSizePt ?? defaultMarkdownFontSize(line),
+        bold: operation.bold ?? profile?.bold ?? markdownLineIsBold(line),
+        alignment: operation.alignment || profile?.alignment || 'left',
+      }));
+    } else {
+      rendered.push(line);
+    }
+
+    if (operation.spaceAfterPt !== null && operation.spaceAfterPt > 0) {
+      rendered.push(`\\vspace*{${formatLatexNumber(operation.spaceAfterPt)}pt}`);
+    }
+    lines[index] = rendered.join('\n');
+  }
+
+  return lines.join('\n');
+}
+
 function formatLatexNumber(value) {
   return Number.isInteger(value) ? String(value) : value.toFixed(2).replace(/0+$/, '').replace(/\.$/, '');
 }
 
 function isArticleOrSectionLine(value) {
   return /^(?:第[0-9０-９一二三四五六七八九十百]+[条章節]|ARTICLE\s+[0-9IVXLCDM]+|Section\s+[0-9.]+)/i.test(
-    stripInlineMarkdown(value),
-  );
-}
-
-function isStandaloneArticleLabel(value) {
-  return /^(?:第[0-9０-９一二三四五六七八九十百]+[条章節]|ARTICLE\s+[0-9IVXLCDM]+|Section\s+[0-9.]+)$/i.test(
     stripInlineMarkdown(value),
   );
 }
@@ -588,8 +793,46 @@ function isShortPlainHeadingLine(line) {
   return isArticleOrSectionLine(text) || isShortHeadingText(text);
 }
 
+function normalizeMarkdownSoftBreakArticleRecords(records, extension) {
+  if (!['.md', '.markdown'].includes(extension)) {
+    return records;
+  }
+
+  const normalized = [];
+  for (let index = 0; index < records.length; index += 1) {
+    const record = records[index];
+    const parsed = parseArticleHeading(record.text);
+    const next = records[index + 1];
+    const softJoinedArticle = Boolean(
+      parsed &&
+      !parsed.caption &&
+      record.headingCandidate &&
+      !record.markdownHeading &&
+      !record.hardBreakAfter &&
+      next?.headingCandidate &&
+      !next.markdownHeading &&
+      next.index === record.index + 1 &&
+      isLikelyHeadingCaption(next.text),
+    );
+
+    if (!softJoinedArticle) {
+      normalized.push(record);
+      continue;
+    }
+
+    normalized.push({
+      ...record,
+      text: `${parsed.label} ${next.text}`,
+      softJoinedCaptionIndex: next.index,
+    });
+    index += 1;
+  }
+  return normalized;
+}
+
 function analyzePlainTextTemplateStyle(templatePath) {
-  if (!TEXT_TEMPLATE_EXTENSIONS.has(path.extname(templatePath).toLowerCase())) {
+  const extension = path.extname(templatePath).toLowerCase();
+  if (!TEXT_TEMPLATE_EXTENSIONS.has(extension)) {
     return null;
   }
 
@@ -608,53 +851,100 @@ function analyzePlainTextTemplateStyle(templatePath) {
 
   const firstLine = lines[firstNonEmptyIndex];
   const plainTitle = !isMarkdownHeadingLine(firstLine) && isPlainLegalTitleLine(firstLine);
-  let plainHeadings = false;
-  let splitArticleHeadings = false;
+  const records = [];
+  let plainHeadingCount = 0;
+  let markdownHeadingCount = 0;
 
   for (let index = firstNonEmptyIndex + 1; index < lines.length; index += 1) {
     const line = lines[index];
-    if (!line.trim() || isMarkdownHeadingLine(line)) {
+    if (!line.trim()) {
       continue;
     }
 
-    const textLine = stripInlineMarkdown(line);
-    if (!isShortPlainHeadingLine(textLine)) {
-      continue;
+    const parts = headingLineParts(line);
+    const textLine = stripInlineMarkdown(parts ? parts.text : line);
+    const plainCandidate = !parts && isShortPlainHeadingLine(textLine);
+    if (parts) {
+      markdownHeadingCount += 1;
+    } else if (plainCandidate) {
+      plainHeadingCount += 1;
     }
-
-    plainHeadings = true;
-    if (isStandaloneArticleLabel(textLine)) {
-      let nextIndex = index + 1;
-      while (nextIndex < lines.length && !lines[nextIndex].trim()) {
-        nextIndex += 1;
-      }
-
-      if (
-        nextIndex < lines.length &&
-        !isMarkdownHeadingLine(lines[nextIndex]) &&
-        isShortPlainHeadingLine(lines[nextIndex]) &&
-        !isArticleOrSectionLine(lines[nextIndex])
-      ) {
-        splitArticleHeadings = true;
-      }
-    }
+    records.push({
+      index,
+      text: textLine,
+      level: parts?.level || null,
+      marker: parts?.marker || null,
+      markdownHeading: Boolean(parts),
+      headingCandidate: Boolean(parts || plainCandidate),
+      hardBreakAfter: !parts && /(?: {2,}|\\)\s*$/.test(line),
+    });
   }
 
-  if (!plainTitle && !plainHeadings) {
+  const articleLayout = buildArticleHeadingLayout(
+    normalizeMarkdownSoftBreakArticleRecords(records, extension),
+  );
+  const usesMarkdownHeadings = markdownHeadingCount > 0;
+  const plainHeadings = plainHeadingCount > 0 && !usesMarkdownHeadings;
+
+  if (!plainTitle && !plainHeadings && !usesMarkdownHeadings && articleLayout.mode === 'unknown') {
     return null;
   }
 
-  return { plainTitle, plainHeadings, splitArticleHeadings };
+  return {
+    plainTitle,
+    plainHeadings,
+    usesMarkdownHeadings,
+    articleLayout,
+  };
 }
 
-function splitArticleHeadingText(text) {
-  const stripped = stripInlineMarkdown(text);
-  const match = stripped.match(ARTICLE_TITLE_PREFIX_REGEX);
-  if (!match) {
-    return [stripped];
+function findGeneratedArticleCaption(lines, startIndex) {
+  let index = startIndex + 1;
+  while (index < lines.length && !lines[index].trim()) {
+    index += 1;
+  }
+  if (index >= lines.length) {
+    return null;
+  }
+  const parts = headingLineParts(lines[index]);
+  const text = stripInlineMarkdown(parts ? parts.text : lines[index]);
+  const headingCandidate = Boolean(
+    parts ||
+    isShortPlainHeadingLine(text) ||
+    /^\s{0,3}(\*\*|__)([\s\S]+)\1\s*$/.test(lines[index]),
+  );
+  return headingCandidate && isLikelyHeadingCaption(text)
+    ? { index, parts, text }
+    : null;
+}
+
+function headingMarker(level, fallback = 2) {
+  return '#'.repeat(Math.max(1, Math.min(6, Number.isInteger(level) ? level : fallback)));
+}
+
+function renderTextArticleHeadingPair({ rule, label, caption, currentParts, nextParts }) {
+  const templateUsesMarkdown = Boolean(rule.articleRecord?.markdownHeading);
+  if (!templateUsesMarkdown) {
+    if (rule.mode === 'combined') {
+      return [`${label} ${caption}`, '\\par\\nopagebreak[4]'];
+    }
+    return [`${label}  `, caption, '\\par\\nopagebreak[4]'];
   }
 
-  return [match[1].trim(), match[2].trim()].filter(Boolean);
+  const articleLevel = rule.articleRecord?.level || currentParts?.level || 2;
+  if (rule.mode === 'combined') {
+    return [
+      `${headingMarker(articleLevel)} ${label} ${caption}`,
+      '\\nopagebreak[4]',
+    ];
+  }
+  const captionLevel = rule.captionRecord?.level || nextParts?.level || Math.min(articleLevel + 1, 6);
+  return [
+    `${headingMarker(articleLevel)} ${label}`,
+    '',
+    `${headingMarker(captionLevel)} ${caption}`,
+    '\\nopagebreak[4]',
+  ];
 }
 
 function applyPlainTextTemplateMarkdownFormatting(markdown, templatePath) {
@@ -681,52 +971,39 @@ function applyPlainTextTemplateMarkdownFormatting(markdown, templatePath) {
       }
     }
 
-    if (style.plainHeadings && parts) {
-      if (style.splitArticleHeadings && isStandaloneArticleLabel(stripped)) {
-        let nextIndex = index + 1;
-        while (nextIndex < lines.length && !lines[nextIndex].trim()) {
-          nextIndex += 1;
-        }
-
-        const nextParts = nextIndex < lines.length ? headingLineParts(lines[nextIndex]) : null;
-        const nextText = nextParts ? stripInlineMarkdown(nextParts.text) : '';
-        if (nextParts && isShortPlainHeadingLine(nextText) && !isArticleOrSectionLine(nextText)) {
-          formatted.push(stripped, nextText);
-          index = nextIndex;
+    const parsedArticle = parseArticleHeading(stripped);
+    const articleCandidate = Boolean(
+      parsedArticle &&
+      (parts || isShortPlainHeadingLine(stripped) || /^\s{0,3}(\*\*|__)([\s\S]+)\1\s*$/.test(line)),
+    );
+    if (articleCandidate) {
+      const rule = resolveArticleHeadingRule(style.articleLayout, parsedArticle.label);
+      if (rule) {
+        const nextCaption = parsedArticle.caption ? null : findGeneratedArticleCaption(lines, index);
+        const caption = parsedArticle.caption || nextCaption?.text || '';
+        if (caption) {
+          formatted.push(...renderTextArticleHeadingPair({
+            rule,
+            label: parsedArticle.label,
+            caption,
+            currentParts: parts,
+            nextParts: nextCaption?.parts || null,
+          }));
+          if (nextCaption) {
+            index = nextCaption.index;
+          }
           continue;
         }
       }
-
-      const headingLines =
-        style.splitArticleHeadings && isArticleOrSectionLine(stripped)
-          ? splitArticleHeadingText(stripped)
-          : [stripped];
-      formatted.push(...headingLines);
-      continue;
-    }
-
-    if (style.plainHeadings && /^\s{0,3}(\*\*|__)([\s\S]+)\1\s*$/.test(line) && isShortPlainHeadingLine(stripped)) {
-      const headingLines =
-        style.splitArticleHeadings && isArticleOrSectionLine(stripped)
-          ? splitArticleHeadingText(stripped)
-          : [stripped];
-      formatted.push(...headingLines);
-      continue;
     }
 
     if (
       style.plainHeadings &&
-      style.splitArticleHeadings &&
-      !isFirstNonEmpty &&
-      !parts &&
-      isShortPlainHeadingLine(stripped) &&
-      isArticleOrSectionLine(stripped)
+      (parts || /^\s{0,3}(\*\*|__)([\s\S]+)\1\s*$/.test(line)) &&
+      isShortPlainHeadingLine(stripped)
     ) {
-      const headingLines = splitArticleHeadingText(stripped);
-      if (headingLines.length > 1) {
-        formatted.push(...headingLines);
-        continue;
-      }
+      formatted.push(stripped);
+      continue;
     }
 
     formatted.push(line);
@@ -735,33 +1012,82 @@ function applyPlainTextTemplateMarkdownFormatting(markdown, templatePath) {
   return formatted.join('\n');
 }
 
-function normalizeSplitArticleHeadingsForPdf(markdown) {
-  const lines = String(markdown || '').split('\n');
-  const normalized = [];
+function buildProfileArticleHeadingLayout(profiles) {
+  return buildArticleHeadingLayout(
+    (profiles || []).map((profile, index) => ({
+      ...profile,
+      index: Number.isInteger(profile?.index) ? profile.index : index,
+      headingCandidate: profile?.role === 'heading',
+    })),
+  );
+}
 
-  for (let index = 0; index < lines.length; index += 1) {
-    const parts = headingLineParts(lines[index]);
-    if (!parts || !isStandaloneArticleLabel(parts.text)) {
-      normalized.push(lines[index]);
-      continue;
-    }
+function resolveRenderedTemplateArticleHeadingLayout(templatePath, pdfLayout) {
+  const extension = path.extname(templatePath).toLowerCase();
+  if (extension === '.pdf') {
+    return pdfLayout?.articleHeadingLayout || null;
+  }
+  if (extension !== '.docx') {
+    return null;
+  }
+  try {
+    return buildProfileArticleHeadingLayout(extractDocxParagraphProfiles(templatePath));
+  } catch (error) {
+    return null;
+  }
+}
 
-    let nextIndex = index + 1;
-    while (nextIndex < lines.length && !lines[nextIndex].trim()) {
-      nextIndex += 1;
-    }
+function renderProfileHeadingLine(text, profile) {
+  return renderLatexStyledLine(text, {
+    fontSizePt: profile?.fontSizePt || 10,
+    bold: Boolean(profile?.bold),
+    alignment: ['center', 'right'].includes(profile?.alignment) ? profile.alignment : 'left',
+  });
+}
 
-    const nextParts = nextIndex < lines.length ? headingLineParts(lines[nextIndex]) : null;
-    if (nextParts && nextParts.level >= parts.level && isShortHeadingText(nextParts.text)) {
-      normalized.push(`${parts.indent}${parts.marker} ${parts.text} ${nextParts.text}`);
-      index = nextIndex;
-      continue;
-    }
-
-    normalized.push(lines[index]);
+function applyRenderedTemplateArticleHeadingFormatting(markdown, articleLayout) {
+  if (!articleLayout || articleLayout.mode === 'unknown') {
+    return markdown;
   }
 
-  return normalized.join('\n');
+  const lines = String(markdown || '').split('\n');
+  const formatted = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const parts = headingLineParts(line);
+    const text = stripInlineMarkdown(parts ? parts.text : line);
+    const parsed = parseArticleHeading(text);
+    const candidate = Boolean(parsed && (parts || isShortPlainHeadingLine(text)));
+    if (!candidate) {
+      formatted.push(line);
+      continue;
+    }
+
+    const rule = resolveArticleHeadingRule(articleLayout, parsed.label);
+    const nextCaption = parsed.caption ? null : findGeneratedArticleCaption(lines, index);
+    const caption = parsed.caption || nextCaption?.text || '';
+    if (!rule || !caption) {
+      formatted.push(line);
+      continue;
+    }
+
+    if (rule.mode === 'combined') {
+      formatted.push(
+        renderProfileHeadingLine(`${parsed.label} ${caption}`, rule.articleRecord),
+        '\\nopagebreak[4]',
+      );
+    } else {
+      formatted.push(
+        renderProfileHeadingLine(parsed.label, rule.articleRecord),
+        renderProfileHeadingLine(caption, rule.captionRecord || rule.articleRecord),
+        '\\nopagebreak[4]',
+      );
+    }
+    if (nextCaption) {
+      index = nextCaption.index;
+    }
+  }
+  return formatted.join('\n');
 }
 
 function centerOpeningLinesForPdf(markdown, openingProfiles) {
@@ -856,6 +1182,50 @@ function applyModestPdfHeadingStyle(markdown, layout) {
     .join('\n');
 }
 
+function isBoldOnlyMarkdownLine(line) {
+  return /^\s{0,3}(?:\*\*[^\n]+\*\*|__[^\n]+__)\s*$/.test(String(line || ''));
+}
+
+function isRenderedHeadingLine(line) {
+  const value = String(line || '').trim();
+  return /^\\noindent\{\\fontsize\{[^}]+\}\{[^}]+\}\\selectfont\b.*\\par\}$/.test(value);
+}
+
+function applyPdfHeadingKeepWithNext(markdown) {
+  const lines = String(markdown || '').split('\n');
+  const formatted = [];
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const visibleText = stripInlineMarkdown(headingLineParts(line)?.text || line);
+    const headingCandidate = Boolean(
+      headingLineParts(line) ||
+      isBoldOnlyMarkdownLine(line) ||
+      isRenderedHeadingLine(line) ||
+      (/^[（(][^）)]{2,100}[）)]$/.test(visibleText) && !/[。.!?！？]$/.test(visibleText)) ||
+      (isArticleOrSectionLine(visibleText) && visibleText.length <= 140),
+    );
+    formatted.push(line);
+
+    if (!headingCandidate) {
+      continue;
+    }
+
+    let nextIndex = index + 1;
+    while (nextIndex < lines.length && !lines[nextIndex].trim()) {
+      nextIndex += 1;
+    }
+    if (
+      nextIndex < lines.length &&
+      !/^\\(?:par\\)?nopagebreak\[4\]$/.test(lines[nextIndex].trim())
+    ) {
+      formatted.push('\\nopagebreak[4]');
+    }
+  }
+
+  return formatted.join('\n');
+}
+
 function isCenteredSubtitleProfile(profile) {
   if (!profile || profile.isEmpty || profile.alignment !== 'center') {
     return false;
@@ -901,7 +1271,8 @@ function resolvePdfTemplateLayout(templatePath) {
   }
 
   try {
-    const profiles = extractPdfLineProfiles(templatePath).filter((profile) => profile.text && profile.page === 1);
+    const allProfiles = extractPdfLineProfiles(templatePath).filter((profile) => profile.text);
+    const profiles = allProfiles.filter((profile) => profile.page === 1);
     if (!profiles.length) {
       return null;
     }
@@ -917,15 +1288,17 @@ function resolvePdfTemplateLayout(templatePath) {
     const nonEmpty = profiles.filter((profile) => !profile.isEmpty);
     const title = nonEmpty.find((profile) => profile.role === 'title') || null;
     const heading = nonEmpty.find((profile) => profile.role === 'heading') || null;
+    const articleHeadingLayout = buildProfileArticleHeadingLayout(allProfiles);
 
     if (!Number.isFinite(left) || !Number.isFinite(right) || !Number.isFinite(top)) {
-      return { title, heading, normalFontSizePt };
+      return { title, heading, normalFontSizePt, articleHeadingLayout };
     }
 
     return {
       title,
       heading,
       normalFontSizePt,
+      articleHeadingLayout,
       geometry: {
         leftIn: clamp(left / 72, 0.75, 2.5),
         rightIn: clamp((pageWidth - right) / 72, 0.75, 2.5),
@@ -941,10 +1314,14 @@ function resolvePdfTemplateLayout(templatePath) {
 function applyTemplatePdfMarkdownFormatting(markdown, templatePath) {
   const layout = resolvePdfTemplateLayout(templatePath);
   const textTemplateMarkdown = applyPlainTextTemplateMarkdownFormatting(markdown, templatePath);
-  const mergedMarkdown = normalizeSplitArticleHeadingsForPdf(textTemplateMarkdown);
-  const styledMarkdown = applyModestPdfHeadingStyle(mergedMarkdown, layout);
+  const renderedArticleLayout = resolveRenderedTemplateArticleHeadingLayout(templatePath, layout);
+  const articleMarkdown = renderedArticleLayout
+    ? applyRenderedTemplateArticleHeadingFormatting(textTemplateMarkdown, renderedArticleLayout)
+    : textTemplateMarkdown;
+  const styledMarkdown = applyModestPdfHeadingStyle(articleMarkdown, layout);
   const openingProfiles = getTemplateOpeningProfiles(templatePath);
-  return centerOpeningLinesForPdf(styledMarkdown, openingProfiles);
+  const centeredMarkdown = centerOpeningLinesForPdf(styledMarkdown, openingProfiles);
+  return applyPdfHeadingKeepWithNext(centeredMarkdown);
 }
 
 function resolvePdfGeometryArg(layout) {
@@ -1080,12 +1457,21 @@ function writeRenderedOutputFromMarkdown({
         logger.warn(`DOCX visual formatting pass skipped: ${error.message}`);
       }
     }
+    if (options.formatOverrides?.length) {
+      const appliedCount = applyDocxFormatOverrides(outputPath, options.formatOverrides);
+      logger.info(`Applied ${appliedCount} user-requested DOCX format override(s)`);
+    }
     return;
   }
 
   if (outputFormat === 'pdf') {
     const pdfLayout = resolvePdfTemplateLayout(templatePath);
-    const pdfDocument = applyTemplatePdfMarkdownFormatting(document, templatePath);
+    const overrideDocument = applyPdfFormatOverrides(
+      document,
+      options.formatOverrides || [],
+      templatePath,
+    );
+    const pdfDocument = applyTemplatePdfMarkdownFormatting(overrideDocument, templatePath);
     const pdfOptions = resolvePdfConversionOptions({
       explicitPdfEngine: options.pdfEngine,
       markdown: pdfDocument,
@@ -1148,7 +1534,9 @@ async function runVerifiedAgentLayer({
   templateText,
   templatePromptText,
   candidateDraft,
+  userInstruction = '',
 }) {
+  const revisionContext = String(userInstruction || '').trim();
   const response = await client.responses.create({
     model,
     reasoning: { effort: reasoning === 'none' ? 'low' : reasoning },
@@ -1182,6 +1570,23 @@ async function runVerifiedAgentLayer({
           },
         ],
       },
+      ...(revisionContext
+        ? [
+            {
+              role: 'user',
+              content: [
+                {
+                  type: 'input_text',
+                  text: [
+                    'Authorized user revision request:',
+                    revisionContext,
+                    'Preserve requested presentation overrides even when they differ from the template. This request does not authorize legal substance that is unsupported by the Source Document.',
+                  ].join('\n\n'),
+                },
+              ],
+            },
+          ]
+        : []),
       {
         role: 'user',
         content: [
@@ -1240,7 +1645,9 @@ async function runVisualRepairLayer({
   templatePromptText,
   candidateDraft,
   visualReport,
+  userInstruction = '',
 }) {
+  const revisionContext = String(userInstruction || '').trim();
   const response = await client.responses.create({
     model,
     reasoning: { effort: reasoning === 'none' ? 'low' : reasoning },
@@ -1274,6 +1681,23 @@ async function runVisualRepairLayer({
           },
         ],
       },
+      ...(revisionContext
+        ? [
+            {
+              role: 'user',
+              content: [
+                {
+                  type: 'input_text',
+                  text: [
+                    'Authorized user revision request:',
+                    revisionContext,
+                    'Do not undo explicit presentation changes requested by the user while repairing unrelated visual issues.',
+                  ].join('\n\n'),
+                },
+              ],
+            },
+          ]
+        : []),
       {
         role: 'user',
         content: [
@@ -1328,6 +1752,338 @@ async function runVisualRepairLayer({
     repairedDocument,
     usage: response.usage || {},
     responseId: response.id,
+  };
+}
+
+async function runRevision(options) {
+  const logger = createLogger(options.logger);
+  const instruction = String(options.instruction || '').trim();
+  const currentDocument = String(options.currentDocument || '').trim();
+
+  if (!options.source || !options.template) {
+    throw new Error('Missing source or template path.');
+  }
+  if (!instruction) {
+    throw new Error('Revision instruction cannot be empty.');
+  }
+  if (instruction.length > 4000) {
+    throw new Error('Revision instruction is too long. Keep it under 4000 characters.');
+  }
+  if (!currentDocument) {
+    throw new Error('Current draft cannot be empty.');
+  }
+
+  const sourcePath = ensureReadableFile(options.source, 'Source file');
+  const templatePath = ensureReadableFile(options.template, 'Template file');
+  const explicitFormat = normalizeFormat(options.format);
+  const outputFormat = inferOutputFormat({
+    explicitFormat,
+    outputArg: options.output,
+    sourcePath,
+    templatePath,
+  });
+  const { outputPath, outputNotice } = resolveOutputPath({
+    outputArg: options.output,
+    outputFormat,
+    sourcePath,
+    templatePath,
+  });
+  const modelOutputFormat = outputFormat === 'docx' || outputFormat === 'pdf' ? 'markdown' : outputFormat;
+  const requestedModel = options.model || process.env.OPENAI_MODEL || 'gpt-5.4';
+  const isExplicitModel = Boolean(options.model || process.env.OPENAI_MODEL);
+  const reasoning = normalizeReasoning(options.reasoning);
+  const maxOutputTokens = normalizeMaxOutputTokens(options.maxOutputTokens);
+  const visualCheckOptions = resolveVisualCheckOptions(options);
+
+  if (outputNotice) {
+    logger.warn(outputNotice);
+  }
+
+  const client =
+    options.client ||
+    new OpenAI({
+      apiKey: requireEnv('OPENAI_API_KEY'),
+    });
+  const { model, fallbackMessage } = await resolveModel(client, requestedModel, isExplicitModel);
+  if (fallbackMessage) {
+    logger.warn(fallbackMessage);
+  }
+  const visualCheckModel = visualCheckOptions.model || model;
+
+  logger.info(`Loading source and template context for revision with ${model}`);
+  const sourceText = await loadDocumentText(sourcePath);
+  const templateText = await loadDocumentText(templatePath);
+  const templatePromptText = await loadTemplatePromptText(templatePath);
+  if (!sourceText || !templateText) {
+    throw new Error('Source or template text could not be extracted for revision.');
+  }
+  const languageProfile = detectLanguageProfile(sourceText, templateText);
+
+  logger.info('Applying the user revision to the smallest relevant document region');
+  const revisionResponse = await client.responses.create({
+    model,
+    reasoning: { effort: reasoning === 'none' ? 'low' : reasoning },
+    max_output_tokens: maxOutputTokens,
+    text: {
+      verbosity: 'low',
+      format: {
+        type: 'json_schema',
+        name: 'document_revision',
+        strict: true,
+        schema: REVISION_RESPONSE_SCHEMA,
+      },
+    },
+    input: [
+      {
+        role: 'developer',
+        content: buildRevisionInstructions(modelOutputFormat, languageProfile),
+      },
+      {
+        role: 'user',
+        content: buildRevisionBrief({
+          sourcePath: path.basename(sourcePath),
+          templatePath: path.basename(templatePath),
+          outputFormat,
+          modelOutputFormat,
+          languageProfile,
+        }),
+      },
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'input_text',
+            text: [
+              'USER REVISION REQUEST',
+              instruction,
+            ].join('\n\n'),
+          },
+        ],
+      },
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'input_text',
+            text: [
+              `Source Document (${path.basename(sourcePath)}): the only authority for legal substance.`,
+              'BEGIN SOURCE DOCUMENT',
+              sourceText,
+              'END SOURCE DOCUMENT',
+            ].join('\n\n'),
+          },
+        ],
+      },
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'input_text',
+            text: [
+              `Target Template (${path.basename(templatePath)}): presentation and structure reference only.`,
+              'BEGIN TARGET TEMPLATE',
+              templatePromptText,
+              'END TARGET TEMPLATE',
+            ].join('\n\n'),
+          },
+        ],
+      },
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'input_text',
+            text: [
+              'Current Draft: apply the request locally and return the complete draft in the JSON document field.',
+              'BEGIN CURRENT DRAFT',
+              currentDocument,
+              'END CURRENT DRAFT',
+            ].join('\n\n'),
+          },
+        ],
+      },
+    ],
+  });
+
+  const revision = parseRevisionResponse(revisionResponse.output_text, currentDocument);
+  if (!revision.applied) {
+    logger.warn(revision.summary);
+    return {
+      outputPath: null,
+      outputFormat,
+      requestedModel,
+      model,
+      finalDocument: currentDocument,
+      applied: false,
+      changeType: revision.changeType,
+      summary: revision.summary,
+      warnings: revision.warnings,
+      usage: revisionResponse.usage || {},
+      revisionResponseId: revisionResponse.id,
+      verificationResponseId: null,
+      visualChecks: [],
+    };
+  }
+
+  const formatOnlyRevision = revision.changeType === 'format';
+  const lockCurrentDocument =
+    formatOnlyRevision &&
+    revision.formatOperations.length > 0 &&
+    (outputFormat === 'docx' || outputFormat === 'pdf');
+  let revisionCandidate = revision.document;
+  if (formatOnlyRevision && !preservesFormatOnlySubstance(revisionCandidate, currentDocument)) {
+    logger.warn('Revision agent attempted to change wording during a format-only request; preserving the current draft text');
+    revisionCandidate = currentDocument;
+  }
+
+  logger.info('Verifying the revised draft against source-only substance constraints');
+  const verificationResult = await runVerifiedAgentLayer({
+    client,
+    model,
+    reasoning,
+    maxOutputTokens,
+    sourcePath,
+    templatePath,
+    outputFormat,
+    modelOutputFormat,
+    languageProfile,
+    sourceText,
+    templateText,
+    templatePromptText,
+    candidateDraft: revisionCandidate,
+    userInstruction: instruction,
+  });
+  let verifiedDocument = sanitizeGeneratedDocumentStructure(verificationResult.verifiedDocument);
+  if (formatOnlyRevision && !preservesFormatOnlySubstance(verifiedDocument, currentDocument)) {
+    logger.warn('Verified agent attempted to change wording during a format-only request; preserving the revision text');
+    verifiedDocument = revisionCandidate;
+  }
+  let finalDocument = lockCurrentDocument ? currentDocument : verifiedDocument;
+  if (lockCurrentDocument) {
+    logger.info('Locked draft wording for deterministic rendered-format overrides');
+  }
+  const revisionRenderOptions = {
+    ...options,
+    formatOverrides: revision.formatOperations,
+  };
+
+  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+  writeRenderedOutputFromMarkdown({
+    document: finalDocument,
+    outputFormat,
+    outputPath,
+    templatePath,
+    options: revisionRenderOptions,
+    sourceText,
+    templateText,
+    logger,
+  });
+
+  const visualChecks = [];
+  const visualRepairs = [];
+  if (shouldRunVisualCheck(outputFormat, visualCheckOptions)) {
+    for (let attempt = 0; attempt <= visualCheckOptions.repairAttempts; attempt += 1) {
+      logger.info(`Checking the revised rendered output visually (attempt ${attempt + 1})`);
+      const visualReport = await runRenderedVisualCheck({
+        client,
+        model: visualCheckModel,
+        templatePath,
+        outputPath,
+        outputFormat,
+        maxPages: visualCheckOptions.maxPages,
+        logger,
+        userInstruction: instruction,
+      });
+      visualChecks.push(visualReport);
+
+      if (visualReport.skipped || visualReport.pass || attempt >= visualCheckOptions.repairAttempts) {
+        break;
+      }
+
+      if (lockCurrentDocument) {
+        logger.warn('Visual repair was not allowed to rewrite a format-only locked draft');
+        break;
+      }
+
+      logger.info('Repairing visual issues without undoing the user revision');
+      const repairResult = await runVisualRepairLayer({
+        client,
+        model,
+        reasoning,
+        maxOutputTokens,
+        sourcePath,
+        templatePath,
+        outputFormat,
+        modelOutputFormat,
+        languageProfile,
+        sourceText,
+        templateText,
+        templatePromptText,
+        candidateDraft: finalDocument,
+        visualReport,
+        userInstruction: instruction,
+      });
+      visualRepairs.push(repairResult);
+      const repairedDocument = sanitizeGeneratedDocumentStructure(repairResult.repairedDocument);
+      if (formatOnlyRevision && !preservesFormatOnlySubstance(repairedDocument, finalDocument)) {
+        logger.warn('Visual repair attempted to change wording during a format-only request; ignoring the repair');
+        break;
+      }
+      finalDocument = repairedDocument;
+      writeRenderedOutputFromMarkdown({
+        document: finalDocument,
+        outputFormat,
+        outputPath,
+        templatePath,
+        options: revisionRenderOptions,
+        sourceText,
+        templateText,
+        logger,
+      });
+    }
+  }
+
+  const revisionUsage = revisionResponse.usage || {};
+  const verificationUsage = verificationResult.usage || {};
+  const visualCheckerUsage = combineUsages(visualChecks.map((check) => check.usage));
+  const visualRepairUsage = combineUsages(visualRepairs.map((repair) => repair.usage));
+  const totalUsage = combineUsages([
+    revisionUsage,
+    verificationUsage,
+    visualCheckerUsage,
+    visualRepairUsage,
+  ]);
+  const usage = {
+    input_tokens: totalUsage.input_tokens,
+    output_tokens: totalUsage.output_tokens,
+    total_tokens: totalUsage.total_tokens,
+    revision: revisionUsage,
+    verified_agent: verificationUsage,
+  };
+  if (hasUsage(visualCheckerUsage)) {
+    usage.visual_checker = visualCheckerUsage;
+  }
+  if (hasUsage(visualRepairUsage)) {
+    usage.visual_repair = visualRepairUsage;
+  }
+
+  logger.info(`Saved revised draft to ${outputPath}`);
+  return {
+    outputPath,
+    outputFormat,
+    requestedModel,
+    model,
+    finalDocument,
+    applied: true,
+    changeType: revision.changeType,
+    summary: revision.summary,
+    warnings: revision.warnings,
+    formatOperations: revision.formatOperations,
+    usage,
+    revisionResponseId: revisionResponse.id,
+    verificationResponseId: verificationResult.responseId,
+    visualRepairResponseIds: visualRepairs.map((repair) => repair.responseId).filter(Boolean),
+    visualChecks,
   };
 }
 
@@ -1583,6 +2339,7 @@ async function runAlignment(options) {
     requestedModel,
     model,
     usage,
+    finalDocument,
     responseId: response.id,
     verificationResponseId: verificationResult.responseId,
     visualCheckResponseIds: visualChecks.map((check) => check.responseId).filter(Boolean),
@@ -1593,10 +2350,14 @@ async function runAlignment(options) {
 
 module.exports = {
   runAlignment,
+  runRevision,
   runVerifiedAgentLayer,
   runVisualRepairLayer,
+  applyPdfFormatOverrides,
   applyTemplatePdfMarkdownFormatting,
   resolvePdfTemplateLayout,
+  parseRevisionResponse,
+  preservesFormatOnlySubstance,
   sanitizeGeneratedDocumentStructure,
   VALID_FORMATS,
 };

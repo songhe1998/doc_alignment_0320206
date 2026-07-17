@@ -366,9 +366,16 @@ function buildVisualCheckDeveloperPrompt() {
   ].join('\n');
 }
 
-function buildVisualCheckUserContent({ templateImages = [], templateOutline = '', outputImages, outputFormat }) {
+function buildVisualCheckUserContent({
+  templateImages = [],
+  templateOutline = '',
+  outputImages,
+  outputFormat,
+  userInstruction = '',
+}) {
   const hasTemplateOutline = Boolean(templateOutline);
   const pageCount = hasTemplateOutline ? outputImages.length : Math.min(templateImages.length, outputImages.length);
+  const revisionContext = String(userInstruction || '').trim();
   const content = [
     {
       type: 'input_text',
@@ -381,10 +388,20 @@ function buildVisualCheckUserContent({ templateImages = [], templateOutline = ''
           ? 'Use the target template visual outline as the visual-format reference only.'
           : 'Use the target pages as the visual-format reference only.',
         'The final output should preserve source content, so do not require exact wording matches.',
+        revisionContext
+          ? 'An explicit user revision request follows. Treat its requested presentation change as intentional and do not flag that change merely because it differs from the template.'
+          : '',
         'Set pass=true only if there are no high or medium visual-format issues.',
-      ].join('\n'),
+      ].filter(Boolean).join('\n'),
     },
   ];
+
+  if (revisionContext) {
+    content.push({
+      type: 'input_text',
+      text: ['AUTHORIZED USER REVISION REQUEST', revisionContext].join('\n'),
+    });
+  }
 
   if (hasTemplateOutline) {
     content.push({
@@ -476,6 +493,7 @@ async function runVisualCheck({
   outputImages,
   outputFormat,
   maxOutputTokens = 1600,
+  userInstruction = '',
 }) {
   if ((!templateImages.length && !templateOutline) || !outputImages.length) {
     throw new Error('Visual checker needs at least one template reference and one output image.');
@@ -501,7 +519,13 @@ async function runVisualCheck({
       },
       {
         role: 'user',
-        content: buildVisualCheckUserContent({ templateImages, templateOutline, outputImages, outputFormat }),
+        content: buildVisualCheckUserContent({
+          templateImages,
+          templateOutline,
+          outputImages,
+          outputFormat,
+          userInstruction,
+        }),
       },
     ],
   });
@@ -522,6 +546,7 @@ async function runRenderedVisualCheck({
   outputFormat,
   maxPages,
   logger = console,
+  userInstruction = '',
 }) {
   if (!VISUAL_OUTPUT_FORMATS.has(outputFormat)) {
     return { skipped: true, reason: `Visual checker is not supported for ${outputFormat} output.` };
@@ -559,6 +584,7 @@ async function runRenderedVisualCheck({
       templateOutline,
       outputImages,
       outputFormat,
+      userInstruction,
     });
   } catch (error) {
     if (logger && typeof logger.warn === 'function') {
@@ -592,6 +618,7 @@ module.exports = {
   VISUAL_OUTPUT_FORMATS,
   buildVisualCheckDeveloperPrompt,
   buildVisualCheckUserContent,
+  convertDocumentToPreviewPdf,
   normalizeVisualCheckReport,
   parseVisualCheckJson,
   renderDocumentPreviewImages,

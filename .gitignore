@@ -12,3 +12,10 @@ evaluation/word_docx_roundtrip/
 evaluation/word_docx-run-metadata.json
 evaluation/word_docx_manual_scores.csv
 evaluation/word_docx_report.md
+evaluation/ja_word_docx_benchmark_data.local.js
+evaluation/ja_word_docx_pairs/
+evaluation/ja_word_docx_outputs/
+evaluation/ja_word_docx_roundtrip/
+evaluation/ja_word_docx-run-metadata.json
+evaluation/ja_word_docx_manual_scores.csv
+evaluation/ja_word_docx_report.md
